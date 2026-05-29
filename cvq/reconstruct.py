@@ -35,6 +35,8 @@ def build_from_ckpt(ckpt_path: str, device: str):
         codebook_size=m["codebook_size"], commitment_beta=m["commitment_beta"],
         entropy_weight=m.get("entropy_weight", 0.0),
         entropy_temperature=m.get("entropy_temperature", 1.0),
+        quantizer_type=m.get("quantizer_type", "plain"),
+        quantizer_kwargs=m.get("quantizer_kwargs", None),
         enc_ch=m.get("enc_ch", 128), enc_ch_mult=tuple(m.get("enc_ch_mult", [1, 1, 2, 2, 4])),
         decoder_ch=m["decoder_ch"], decoder_ch_mult=tuple(m["decoder_ch_mult"]),
         decoder_res_blocks=m["decoder_res_blocks"],
