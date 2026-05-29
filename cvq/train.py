@@ -135,10 +135,28 @@ def main():
 
     betas = (tcfg["beta1"], tcfg["beta2"])
     wd = tcfg["weight_decay"]
+    optim_name = tcfg.get("optimizer", "adamw").lower()
     siglip_stage2 = mcfg.get("encoder_type", "siglip") == "siglip" and not mcfg["freeze_encoder"]
-    if not siglip_stage2:
+    if optim_name in ("muon", "pion"):
+        # EXPERIMENTAL optimizer swap: Muon/Pion orthogonalized update on 2D weight matrices
+        # (conv reshaped to 2D), AdamW on embeddings/codebook/norm-gamma-beta/biases.
+        # (Stage-II SigLIP split-lr not supported on this path.)
+        from cvq.muon import MuonAdamW, build_muon_groups
+        muon_lr = tcfg.get("muon_lr", 0.02)
+        g_groups = build_muon_groups(
+            list(tok.named_parameters()), method=optim_name,
+            muon_lr=muon_lr, adamw_lr=tcfg["lr"], weight_decay=wd,
+            momentum=tcfg.get("muon_momentum", 0.95),
+            ns_steps=tcfg.get("muon_ns_steps", 5),
+            promotion_steps=tcfg.get("pion_promotion_steps", 0),
+        )
+        opt_g = MuonAdamW(g_groups)
+        print(f"optimizer: {optim_name} | muon_lr={muon_lr} adamw_lr={tcfg['lr']} | "
+              f"{len(g_groups)} param groups")
+    elif not siglip_stage2:
         # CNN-from-scratch OR frozen-SigLIP Stage I: one lr, split into decay/no-decay.
         g_groups = split_decay_groups(tok.trainable_parameters(), tcfg["lr"], wd)
+        opt_g = torch.optim.AdamW(g_groups, betas=betas, weight_decay=wd)
     else:
         # Stage II (end-to-end): finetune a *pretrained* SigLIP at a lower lr than the
         # fresh head (paper Stage-II lr 2e-5 vs Stage-I 1e-4). Each at its own lr, each
@@ -148,8 +166,8 @@ def main():
         enc_lr = tcfg.get("encoder_lr", tcfg["lr"] * 0.2)
         g_groups = (split_decay_groups(head, tcfg["lr"], wd)
                     + split_decay_groups(enc, enc_lr, wd))
+        opt_g = torch.optim.AdamW(g_groups, betas=betas, weight_decay=wd)
         print(f"Stage II: finetuning encoder at lr={enc_lr:.1e}")
-    opt_g = torch.optim.AdamW(g_groups, betas=betas, weight_decay=wd)
     gen_params = [p for grp in g_groups for p in grp["params"]]
     opt_d = torch.optim.AdamW(split_decay_groups(list(disc.parameters()), tcfg["lr"], wd),
                               betas=betas, weight_decay=wd)

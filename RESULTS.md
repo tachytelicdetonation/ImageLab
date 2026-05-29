@@ -251,7 +251,15 @@ what the three structural methods target.
   The over-smoothing risk did NOT materialize (PSNR is the highest of all runs). Also matches IBQ-**2k**'s
   utilization (90.6%) and beats its PSNR (16.66) in **half the steps**. Prediction confirmed: the two
   mechanisms compound — early ppl hit 2648 at step 300 (vs IBQ ~990). vq_loss stable (~0.45), never diverged.
-  **Recommended production tokenizer** (pending the 9b learnable-base comparison + a full GAN-on run).
+- **⚠️ 4k run reveals the 1k win was a TRANSIENT PEAK (`cvq-cnn-ibqtransvq-cb16384-4k`):** extending to
+  4k steps, util **collapsed 90.5%(s1k) → 25.9%(s2k) → 24%(s4k)** and PSNR 16.87 → 13.5 → 14.6. Crucially
+  the collapse began **before** the GAN (GAN starts s2000): batch ppl peaked 2627@s400 then fell to
+  807@s1600 with the GAN OFF, while `ent` sharpened −3.0→−4.5. **The combination OVER-SHARPENS and
+  self-collapses** (φ-remap + entropy interact to concentrate usage), then the GAN (s2000+) crashes PSNR
+  on top. So IBQ×TransVQ is NOT stable over a long schedule — its 1k result is a peak, not a plateau.
+  Plain IBQ, by contrast, was STABLE (improved 81.5%→90.6% from 1k→2k). **Implication: plain IBQ is the
+  more robust long-schedule quantizer; the combo needs an entropy-weight reduction / early-stop to be
+  usable long.** (Plain-IBQ-4k one-to-one run in progress to confirm.)
 
 ### Run 9b — IBQ × TransVQ with LEARNABLE base codebook (`cvq-cnn-ibqtransvq-learnable-cb16384-1k`)
 - **Question:** is freezing the base codebook actually better, or is a *learnable* base (more
