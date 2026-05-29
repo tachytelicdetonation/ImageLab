@@ -68,7 +68,7 @@ Sorted best→worst by utilization. PSNR↑ / LPIPS↓ / recon_L2↓ are full-ch
 | 7 | Wasserstein matching (γ=0.5) | 79.3% | 14.86 | 0.361 | 0.132 | ✅ |
 | 3 | entropy loss (w=0.1, τ=1) | 56.6% | 14.46 | 0.368 | 0.145 | ✅ |
 | 6 | FVQ / VQBridge (p=16, 140M) | 47.9% | 15.52 | 0.335 | 0.114 | ✅ (overfit?) |
-| 9b | IBQ × TransVQ (learnable base) | _running_ | — | — | — | 🔵 |
+| 9b | IBQ × TransVQ (learnable base) | 89.8% | 16.03 | 0.291 | 0.101 | ✅ (worse: overfits) |
 | 2 | plain VQ, cb4096 | 0.93% | 14.01 | 0.370 | 0.161 | ❌ collapsed |
 | 1 | plain VQ (literal baseline) | 0.15% | 14.09 | 0.367 | 0.158 | ❌ collapsed |
 
@@ -253,7 +253,7 @@ what the three structural methods target.
   mechanisms compound — early ppl hit 2648 at step 300 (vs IBQ ~990). vq_loss stable (~0.45), never diverged.
   **Recommended production tokenizer** (pending the 9b learnable-base comparison + a full GAN-on run).
 
-### Run 9b — IBQ × TransVQ with LEARNABLE base codebook (`cvq-cnn-ibqtransvq-learnable-cb16384-1k`) 🟡 queued
+### Run 9b — IBQ × TransVQ with LEARNABLE base codebook (`cvq-cnn-ibqtransvq-learnable-cb16384-1k`)
 - **Question:** is freezing the base codebook actually better, or is a *learnable* base (more
   flexible) better given IBQ's dense softmax should keep it alive even with φ on top? Tests the
   "learnable is more flexible/better" intuition head-to-head with frozen Run 9.
@@ -263,7 +263,14 @@ what the three structural methods target.
   learnable-`C` collapse that killed plain VQ. **Why it might lose:** reintroduces per-code freedom
   (collapse risk) + adds variance; φ may become partly redundant (design agent's "Alt A", which it
   predicted *strictly worse* for max-utilization). Config: `cvq_pokemon_cnn_ibqtransvq_learnable.yaml`.
-- **Result:** _queued/tbd_
+- **Result:** ❌ **frozen (Run 9) wins.** Learnable base: util 89.8%, PSNR 16.03, LPIPS 0.291,
+  recon_L2 0.101 — frozen beats it on every metric (PSNR +0.84 dB, recon_L2 −18%). **Key finding:**
+  *training* curves were near-identical (both ppl ~2400, rec ~0.08 at step 900), but *validation*
+  diverged (PSNR 16.87 frozen vs 16.03 learnable) → the learnable base's 4.2M extra per-code params
+  **overfit** the 1.3k-image train set and generalize worse. So at this scale, shared-map flexibility
+  (frozen anchor + φ) > raw per-code flexibility, *specifically on generalization*. The "learnable is
+  more flexible/better" intuition is refuted here. (Caveat: at ImageNet scale the verdict could flip —
+  more data → less overfit → the extra capacity could pay off.)
 
 ---
 
