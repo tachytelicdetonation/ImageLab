@@ -95,11 +95,15 @@ def main():
 
     # ---- models ----
     tok = CVQTokenizer(
+        encoder_type=mcfg.get("encoder_type", "siglip"),
         siglip_name=mcfg["siglip_name"], siglip_layers=mcfg["siglip_layers"],
-        freeze_encoder=mcfg["freeze_encoder"], latent_channels=mcfg["latent_channels"],
-        codebook_size=mcfg["codebook_size"], codebook_decay=mcfg["codebook_decay"],
-        commitment_beta=mcfg["commitment_beta"], decoder_ch=mcfg["decoder_ch"],
-        decoder_ch_mult=tuple(mcfg["decoder_ch_mult"]), decoder_res_blocks=mcfg["decoder_res_blocks"],
+        freeze_encoder=mcfg["freeze_encoder"], resolution=cfg["data"]["size"],
+        latent_channels=mcfg["latent_channels"],
+        codebook_size=mcfg["codebook_size"], codebook_ema=mcfg.get("codebook_ema", True),
+        commitment_beta=mcfg["commitment_beta"],
+        enc_ch=mcfg.get("enc_ch", 128), enc_ch_mult=tuple(mcfg.get("enc_ch_mult", [1, 1, 2, 2, 4])),
+        decoder_ch=mcfg["decoder_ch"], decoder_ch_mult=tuple(mcfg["decoder_ch_mult"]),
+        decoder_res_blocks=mcfg["decoder_res_blocks"],
     ).to(device)
     disc = NLayerDiscriminator(input_nc=3, ndf=64, n_layers=3).to(device)
 
@@ -111,12 +115,13 @@ def main():
     ).to(device)
 
     betas = (tcfg["beta1"], tcfg["beta2"])
-    if mcfg["freeze_encoder"]:
-        # Stage I: only the adapter + decoder train.
+    siglip_stage2 = mcfg.get("encoder_type", "siglip") == "siglip" and not mcfg["freeze_encoder"]
+    if not siglip_stage2:
+        # CNN-from-scratch OR frozen-SigLIP Stage I: one group at the base lr.
         g_groups = [{"params": tok.trainable_parameters(), "lr": tcfg["lr"]}]
     else:
-        # Stage II (end-to-end): finetune SigLIP at a lower LR than the fresh head
-        # (paper Stage-II lr 2e-5 vs Stage-I 1e-4) to avoid wrecking its features.
+        # Stage II (end-to-end): finetune a *pretrained* SigLIP at a lower lr than the
+        # fresh head (paper Stage-II lr 2e-5 vs Stage-I 1e-4).
         head = list(tok.adapter.parameters()) + list(tok.decoder.parameters())
         enc = [p for p in tok.encoder.parameters() if p.requires_grad]
         g_groups = [

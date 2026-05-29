@@ -27,6 +27,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from .decoder import Decoder, Normalize, ResnetBlock, nonlinearity
+from .encoder_cnn import Encoder as CNNEncoder
 from .quantizer import ChannelwiseVQ
 from .siglip_encoder import SiglipEncoder
 
@@ -53,28 +54,46 @@ class ChannelAdapter(nn.Module):
 class CVQTokenizer(nn.Module):
     def __init__(
         self,
+        encoder_type: str = "siglip",   # "siglip" (frozen ViT + adapter) | "cnn" (from scratch)
         siglip_name: str = "google/siglip-base-patch16-256",
         siglip_layers: int | None = None,
         freeze_encoder: bool = True,
+        resolution: int = 256,
         latent_channels: int = 256,     # number of channel-tokens (CAR sequence length)
         codebook_size: int = 16384,
+        codebook_ema: bool = True,      # EMA + restart (stable) vs plain gradient VQ
         codebook_decay: float = 0.99,
         commitment_beta: float = 0.25,
+        enc_ch: int = 128,
+        enc_ch_mult=(1, 1, 2, 2, 4),
         decoder_ch: int = 128,
         decoder_ch_mult=(1, 1, 2, 2, 4),
         decoder_res_blocks: int = 2,
     ):
         super().__init__()
-        self.encoder = SiglipEncoder(siglip_name, n_layers=siglip_layers, freeze=freeze_encoder)
-        g = self.encoder.grid
-        token_dim = self.encoder.token_dim  # g*g
+        self.encoder_type = encoder_type
+        if encoder_type == "cnn":
+            # Trainable CNN encoder from scratch (paper's VQGAN setup). f = 2^(len-1).
+            g = resolution // (2 ** (len(enc_ch_mult) - 1))
+            self.encoder = CNNEncoder(
+                ch=enc_ch, ch_mult=tuple(enc_ch_mult), num_res_blocks=decoder_res_blocks,
+                z_channels=latent_channels, resolution=resolution, attn_resolutions=(g,),
+            )
+            self.adapter = nn.Identity()  # encoder already outputs latent_channels
+            image_size = resolution
+        else:
+            self.encoder = SiglipEncoder(siglip_name, n_layers=siglip_layers, freeze=freeze_encoder)
+            g = self.encoder.grid
+            self.adapter = ChannelAdapter(self.encoder.channels, latent_channels)
+            image_size = self.encoder.image_size
+        token_dim = g * g
 
-        self.adapter = ChannelAdapter(self.encoder.channels, latent_channels)
         self.quantizer = ChannelwiseVQ(
             codebook_size=codebook_size,
             token_dim=token_dim,
-            decay=codebook_decay,
             commitment_beta=commitment_beta,
+            use_ema=codebook_ema,
+            decay=codebook_decay,
         )
         self.decoder = Decoder(
             ch=decoder_ch,
@@ -82,7 +101,7 @@ class CVQTokenizer(nn.Module):
             ch_mult=decoder_ch_mult,
             num_res_blocks=decoder_res_blocks,
             z_channels=latent_channels,
-            resolution=self.encoder.image_size,
+            resolution=image_size,
             attn_resolutions=(g,),
         )
         self.latent_channels = latent_channels
@@ -118,7 +137,8 @@ class CVQTokenizer(nn.Module):
             "vq_loss": vq_loss,
             "indices": idxs,
             "stats": stats,
-            "siglip_feat": feat,
+            # SigLIP feature is only meaningful for the semantic loss (siglip encoder).
+            "siglip_feat": feat if self.encoder_type == "siglip" else None,
         }
 
     def trainable_parameters(self):
@@ -131,6 +151,8 @@ class CVQTokenizer(nn.Module):
         params = (list(self.adapter.parameters())
                   + list(self.quantizer.parameters())
                   + list(self.decoder.parameters()))
-        if not self.encoder.frozen:
+        if self.encoder_type == "cnn":
+            params += list(self.encoder.parameters())          # trained from scratch
+        elif not self.encoder.frozen:
             params += [p for p in self.encoder.parameters() if p.requires_grad]
         return params

@@ -1,0 +1,70 @@
+# CVQ tokenizer — PAPER'S TRUE SETUP: CNN VQGAN encoder trained from scratch + plain
+# channel-wise VQ (no EMA/restart) + VQGAN decoder. No SigLIP, no semantic loss.
+# Encoder and codebook co-adapt, which is what lets plain VQ avoid collapse.
+
+data:
+  root: data
+  size: 256
+  hflip: true
+
+model:
+  encoder_type: cnn          # <-- trainable CNN encoder from scratch (the paper's method)
+  freeze_encoder: false      # n/a for cnn, but keep false
+  siglip_name: google/siglip-base-patch16-256   # unused for cnn
+  siglip_layers: null
+  resolution: 256
+  latent_channels: 256       # channel-tokens; encoder z_channels = 256
+  codebook_size: 16384       # paper
+  codebook_ema: true         # EMA + dead-code restart (plain VQ collapses at our scale)
+  commitment_beta: 0.25
+  enc_ch: 128                # encoder base width
+  enc_ch_mult: [1, 1, 2, 2, 4]   # 256 -> 16 (f=16), 4 downsamples
+  decoder_ch: 128
+  decoder_ch_mult: [1, 1, 2, 2, 4]
+  decoder_res_blocks: 2
+
+loss:
+  recon_loss_type: l2        # paper
+  perceptual_weight: 1.0     # LPIPS
+  semantic_weight: 0.0       # no semantic loss in the paper's tokenizer
+  codebook_weight: 1.0
+  disc_weight: 1.0           # lambda_0 = 1
+  disc_loss: hinge
+  lpips_net: vgg
+  gan_eta: 0.05
+
+train:
+  device: cuda
+  amp: bf16
+  batch_size: 32
+  grad_accum: 1
+  epochs: 100
+  lr: 1.0e-4                 # paper
+  encoder_lr: 1.0e-4         # cnn trains at base lr (single group)
+  beta1: 0.5
+  beta2: 0.9
+  weight_decay: 1.0e-4
+  warmup_steps: 2000
+  disc_start_step: 2000      # let the AE form before the GAN
+  nested_dropout_prob: 0.25  # alpha
+  log_every: 50
+  sample_every: 500
+  ckpt_every: 1000
+  val_every: 1000
+  val_fid: true
+  num_workers: 8
+  seed: 0
+
+wandb:
+  enabled: true
+  project: cvq-pokemon
+  entity: null
+  name: cvq-tokenizer-cnn-fromscratch
+  mode: online
+  log_checkpoints: true
+
+out:
+  ckpt_dir: checkpoints
+  sample_dir: samples
+  run_dir: runs
+  keep_last: 3
