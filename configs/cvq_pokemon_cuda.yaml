@@ -19,13 +19,16 @@ model:
   decoder_res_blocks: 2
 
 loss:
-  recon_loss_type: l1
-  perceptual_weight: 1.0
-  semantic_weight: 1.0        # sem_weight=1 (README)
+  # Paper's tokenizer objective = pixel-wise L2 + commitment + LPIPS + PatchGAN.
+  recon_loss_type: l2         # paper: "pixel-wise l2 loss" (was l1)
+  perceptual_weight: 1.0      # LPIPS
+  semantic_weight: 0.0        # PAPER HAS NO SEMANTIC LOSS in the tokenizer. The
+                              # README's sem_weight=1 is the repo's SigLIP unified
+                              # variant; it caused a face-prototype artifact here.
   codebook_weight: 1.0
   disc_weight: 0.8
   disc_loss: hinge
-  lpips_net: vgg              # faithful; A100 has room
+  lpips_net: vgg
   gan_eta: 0.05
 
 train:
@@ -41,7 +44,7 @@ train:
   weight_decay: 1.0e-4
   warmup_steps: 2000         # paper 10000 for 1.28M imgs; scaled for ~1.3k imgs x more epochs
   disc_start_step: 2000      # delay GAN until the AE has a usable reconstruction
-  nested_dropout_prob: 0.5   # alpha
+  nested_dropout_prob: 0.25  # alpha ~= 0.25 (paper Table 7); was 0.5
   log_every: 50
   sample_every: 500
   ckpt_every: 1000
