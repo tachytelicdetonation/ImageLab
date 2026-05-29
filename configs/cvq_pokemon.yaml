@@ -1,0 +1,54 @@
+# CVQ tokenizer config — paper-faithful values, scaled to a single M4 Pro (24GB).
+# Paper/README references are noted inline so deviations are explicit.
+
+data:
+  root: data
+  size: 256                 # SigLIP needs >=224; 256 is the paper's native resolution
+  hflip: true               # light augmentation — dataset is small (~1.3k images)
+
+model:
+  siglip_name: google/siglip-base-patch16-256
+  siglip_layers: null       # null = all 12 layers ("first n layers"; null keeps all)
+  freeze_encoder: true      # Stage I freezes the backbone (paper)
+  latent_channels: 256      # number of channel-tokens = CAR sequence length
+  codebook_size: 4096       # paper uses 16384 on ImageNet-1.28M; 4096 suits ~1.3k imgs
+  codebook_decay: 0.99      # EMA decay (paper / VILA-U)
+  commitment_beta: 0.25
+  decoder_ch: 128
+  decoder_ch_mult: [1, 1, 2, 2, 4]   # 16 -> 256 (4 upsamples)
+  decoder_res_blocks: 2
+
+loss:
+  recon_loss_type: l1       # paper states pixel-wise l2; l1 (VILA-U lineage) is sharper
+  perceptual_weight: 1.0    # LPIPS
+  semantic_weight: 1.0      # sem_weight=1 (README)
+  codebook_weight: 1.0
+  disc_weight: 0.8
+  disc_loss: hinge
+  lpips_net: vgg            # faithful; switch to "alex"/"squeeze" if disk-constrained
+  gan_eta: 0.05             # sigmoid sharpness for lambda_gan(c_keep) (paper)
+
+train:
+  device: mps
+  batch_size: 4             # paper 32/GPU x8 = 256 effective; we use accumulation
+  grad_accum: 4             # effective batch 16
+  epochs: 100               # paper 100
+  lr: 1.0e-4                # paper
+  beta1: 0.5                # paper
+  beta2: 0.9                # paper
+  weight_decay: 1.0e-4      # paper
+  warmup_steps: 500         # paper 10000 (for 1.28M imgs); scaled to our dataset
+  disc_start_step: 1500     # paper gan_start_epoch=0; small delay aids stability here
+  # Nested channel dropout policy (see sample_c_keep in train.py)
+  nested_dropout_prob: 0.5  # alpha: fraction of steps that apply channel truncation
+  log_every: 25
+  sample_every: 250
+  ckpt_every: 500
+  num_workers: 2
+  seed: 0
+
+out:
+  ckpt_dir: checkpoints
+  sample_dir: samples
+  run_dir: runs
+  keep_last: 1              # disk-friendly: keep only the latest checkpoint

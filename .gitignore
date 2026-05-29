@@ -1,0 +1,16 @@
+# Data & artifacts (anchored to repo root so cvq/data/ source is NOT ignored)
+/data/
+/checkpoints/
+/samples/
+/runs/
+*.pt
+*.ckpt
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.uv/
+
+# OS
+.DS_Store

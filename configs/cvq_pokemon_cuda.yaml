@@ -1,0 +1,55 @@
+# CVQ tokenizer config for a single A100/H100 (40-80GB). Scaled toward the paper's
+# real settings: full 16K codebook, batch 32, bf16. Stage I (frozen SigLIP) by default.
+
+data:
+  root: data
+  size: 256
+  hflip: true
+
+model:
+  siglip_name: google/siglip-base-patch16-256
+  siglip_layers: null         # all 12 layers
+  freeze_encoder: true        # Stage I. Set false for Stage-II end-to-end finetune.
+  latent_channels: 256        # channel-tokens = CAR sequence length
+  codebook_size: 16384        # paper value — A100/H100 can afford it
+  codebook_decay: 0.99
+  commitment_beta: 0.25
+  decoder_ch: 128
+  decoder_ch_mult: [1, 1, 2, 2, 4]
+  decoder_res_blocks: 2
+
+loss:
+  recon_loss_type: l1
+  perceptual_weight: 1.0
+  semantic_weight: 1.0        # sem_weight=1 (README)
+  codebook_weight: 1.0
+  disc_weight: 0.8
+  disc_loss: hinge
+  lpips_net: vgg              # faithful; A100 has room
+  gan_eta: 0.05
+
+train:
+  device: cuda               # auto-detects; 'cuda' here since this is the GPU config
+  amp: bf16                  # bf16 autocast (A100/H100 native) — ~2x speedup
+  batch_size: 32             # paper used 32/GPU
+  grad_accum: 1              # batch 32 already matches paper's per-GPU batch
+  epochs: 100
+  lr: 1.0e-4                 # paper
+  encoder_lr: 2.0e-5         # used only if freeze_encoder=false (Stage II); paper value
+  beta1: 0.5
+  beta2: 0.9
+  weight_decay: 1.0e-4
+  warmup_steps: 2000         # paper 10000 for 1.28M imgs; scaled for ~1.3k imgs x more epochs
+  disc_start_step: 2000      # delay GAN until the AE has a usable reconstruction
+  nested_dropout_prob: 0.5   # alpha
+  log_every: 50
+  sample_every: 500
+  ckpt_every: 1000
+  num_workers: 8
+  seed: 0
+
+out:
+  ckpt_dir: checkpoints
+  sample_dir: samples
+  run_dir: runs
+  keep_last: 3               # plenty of disk on the server
