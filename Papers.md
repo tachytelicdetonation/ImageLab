@@ -49,11 +49,13 @@ plus the prior works it credits.
   (`cvq/models/encoder_cnn.py`), the default for the faithful run.
 - The **SigLIP ViT** path is only the repo's released "*a ViT version … for convenience*"
   variant, kept as an option (`encoder_type=siglip`) but not the paper's method.
-- **Codebook:** the paper claims plain VQ suffices ("no bells and whistles"), but plain
-  VQ **collapsed at our 1.3k-image scale** with both encoders (usage→0.1%, loss diverged).
-  We therefore use **EMA + dead-code restart** (what the repo's shipped VILA-U code uses);
-  toggle via `codebook_ema`. This is the one place we follow the released code over the
-  paper's prose, justified empirically.
+- **Codebook:** we implement it **100% literally** — plain gradient-updated VQ with the
+  standard codebook + commitment loss, **no EMA, no dead-code restart, no L2-norm, no
+  factorization** (the paper's "no bells and whistles"). Recorded finding: at our 1.3k-image
+  scale this **collapses** (usage → ~0.1%, VQ loss diverges) with both CNN and SigLIP
+  encoders — i.e. the paper's high-utilization claim appears to depend on ImageNet-scale
+  data. Collapse is kept as a baseline data point; any stabilization (better init, more
+  data, EMA, cosine codebook) will be an explicit, documented *modification* on top.
 
 ## Notes on faithfulness
 - Where the paper is explicit, we match it (channel-wise quant, plain VQ, ℓ2, nested

@@ -61,8 +61,6 @@ class CVQTokenizer(nn.Module):
         resolution: int = 256,
         latent_channels: int = 256,     # number of channel-tokens (CAR sequence length)
         codebook_size: int = 16384,
-        codebook_ema: bool = True,      # EMA + restart (stable) vs plain gradient VQ
-        codebook_decay: float = 0.99,
         commitment_beta: float = 0.25,
         enc_ch: int = 128,
         enc_ch_mult=(1, 1, 2, 2, 4),
@@ -92,8 +90,6 @@ class CVQTokenizer(nn.Module):
             codebook_size=codebook_size,
             token_dim=token_dim,
             commitment_beta=commitment_beta,
-            use_ema=codebook_ema,
-            decay=codebook_decay,
         )
         self.decoder = Decoder(
             ch=decoder_ch,

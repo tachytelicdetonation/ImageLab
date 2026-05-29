@@ -1,6 +1,7 @@
-# CVQ tokenizer — PAPER'S TRUE SETUP: CNN VQGAN encoder trained from scratch + plain
-# channel-wise VQ (no EMA/restart) + VQGAN decoder. No SigLIP, no semantic loss.
-# Encoder and codebook co-adapt, which is what lets plain VQ avoid collapse.
+# CVQ tokenizer — 100% LITERAL paper setup: CNN VQGAN encoder from scratch + PLAIN
+# channel-wise VQ (no EMA, no restart, no L2-norm, no factorization) + VQGAN decoder.
+# No SigLIP, no semantic loss. Faithful baseline; collapse (if any) is a recorded
+# data point. Modifications come AFTER this baseline is measured.
 
 data:
   root: data
@@ -15,7 +16,6 @@ model:
   resolution: 256
   latent_channels: 256       # channel-tokens; encoder z_channels = 256
   codebook_size: 16384       # paper
-  codebook_ema: true         # EMA + dead-code restart (plain VQ collapses at our scale)
   commitment_beta: 0.25
   enc_ch: 128                # encoder base width
   enc_ch_mult: [1, 1, 2, 2, 4]   # 256 -> 16 (f=16), 4 downsamples
