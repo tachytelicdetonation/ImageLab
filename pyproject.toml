@@ -20,6 +20,8 @@ dependencies = [
     "einops>=0.8.0",
     # Logging / metrics
     "tensorboard>=2.16.0",
+    "wandb>=0.17.0",
+    "torchmetrics>=1.4.0",       # rFID, PSNR, SSIM
 ]
 
 [tool.uv]

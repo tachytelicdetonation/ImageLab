@@ -13,6 +13,7 @@ Run:
 from __future__ import annotations
 
 import argparse
+import os
 import time
 from contextlib import nullcontext
 from functools import partial
@@ -26,9 +27,16 @@ from torchvision.utils import make_grid, save_image
 
 from cvq.data.dataset import PokemonDataset
 from cvq.losses.losses import CVQLoss
+from cvq.metrics import grad_norm, validate
 from cvq.models.discriminator import NLayerDiscriminator
 from cvq.models.tokenizer import CVQTokenizer
 from cvq.utils import describe_device, resolve_device
+
+try:
+    import wandb
+    _HAS_WANDB = True
+except Exception:
+    _HAS_WANDB = False
 
 
 # --------------------------------------------------------------------------- #
@@ -117,6 +125,7 @@ def main():
         ]
         print(f"Stage II: finetuning encoder at lr={g_groups[1]['lr']:.1e}")
     opt_g = torch.optim.AdamW(g_groups, betas=betas, weight_decay=tcfg["weight_decay"])
+    gen_params = [p for grp in g_groups for p in grp["params"]]
     opt_d = torch.optim.AdamW(disc.parameters(), lr=tcfg["lr"], betas=betas,
                               weight_decay=tcfg["weight_decay"])
     sched_g = torch.optim.lr_scheduler.LambdaLR(opt_g, lambda s: lr_lambda(s, tcfg["warmup_steps"]))
@@ -125,6 +134,34 @@ def main():
     ckpt_dir = Path(ocfg["ckpt_dir"]); ckpt_dir.mkdir(parents=True, exist_ok=True)
     sample_dir = Path(ocfg["sample_dir"]); sample_dir.mkdir(parents=True, exist_ok=True)
     writer = SummaryWriter(ocfg["run_dir"])
+
+    # ---- wandb (durable cloud logging; survives server destruction) ----
+    wcfg = cfg.get("wandb", {}) or {}
+    use_wandb = _HAS_WANDB and wcfg.get("enabled", False)
+    if use_wandb:
+        mode = wcfg.get("mode", "online")
+        if mode == "online" and not os.environ.get("WANDB_API_KEY"):
+            print("WANDB_API_KEY not set -> falling back to offline mode")
+            mode = "offline"
+        wandb.init(project=wcfg.get("project", "cvq-pokemon"), entity=wcfg.get("entity"),
+                   name=wcfg.get("name"), mode=mode, config=cfg)
+        print(f"wandb: logging to project '{wcfg.get('project', 'cvq-pokemon')}' (mode={mode})")
+
+    def wlog(d, s):
+        for k, v in d.items():
+            writer.add_scalar(k, v, s)
+        if use_wandb:
+            wandb.log(d, step=s)
+
+    def wlog_images(imgs, s):
+        if use_wandb:
+            wandb.log({f"images/{k}": wandb.Image(v) for k, v in imgs.items()}, step=s)
+
+    def log_ckpt_artifact(path, s):
+        if use_wandb and wcfg.get("log_checkpoints", True):
+            art = wandb.Artifact("cvq-tokenizer", type="model", metadata={"step": s})
+            art.add_file(str(path))
+            wandb.log_artifact(art, aliases=[f"step{s}", "latest"])
 
     start_step, start_epoch = 0, 0
     if args.resume and Path(args.resume).exists():
@@ -178,38 +215,69 @@ def main():
                 (d_loss / accum).backward()
 
             # ---- optimizer step at accumulation boundary ----
+            gn_g = gn_d = 0.0
             if (i + 1) % accum == 0:
+                gn_g = grad_norm(gen_params)
+                gn_d = grad_norm(disc.parameters())
                 opt_g.step(); sched_g.step()
                 if step >= tcfg["disc_start_step"]:
                     opt_d.step(); sched_d.step()
 
-            # ---- logging ----
+            # ---- scalar logging (A: losses, B: dynamics, C: codebook health) ----
             if step % tcfg["log_every"] == 0:
                 ips = (step - start_step + 1) * tcfg["batch_size"] / (time.time() - t0)
                 ck_str = "full" if c_keep is None else str(c_keep)
                 print(f"e{epoch} s{step} | tot {g_logs['loss/total']:.3f} "
                       f"rec {g_logs['loss/recon']:.3f} lpips {g_logs['loss/lpips']:.3f} "
-                      f"sem {g_logs['loss/semantic']:.3f} vq {g_logs['loss/vq']:.4f} "
-                      f"d {d_logs['loss/disc']:.3f} | use {out['stats']['usage']:.3f} "
-                      f"ppl {out['stats']['perplexity']:.0f} c_keep {ck_str} | {ips:.1f} img/s")
-                for k, v in {**g_logs, **d_logs}.items():
-                    writer.add_scalar(k, v, step)
-                writer.add_scalar("codebook/usage", out["stats"]["usage"], step)
-                writer.add_scalar("codebook/perplexity", out["stats"]["perplexity"], step)
+                      f"vq {g_logs['loss/vq']:.4f} d {d_logs['loss/disc']:.3f} | "
+                      f"use {out['stats']['usage']:.3f} ppl {out['stats']['perplexity']:.0f} "
+                      f"dead {tok.quantizer.codebook_health()['n_dead']} "
+                      f"c_keep {ck_str} | {ips:.1f} img/s")
+                health = tok.quantizer.codebook_health()
+                scalars = {**g_logs, **d_logs}
+                scalars.update({
+                    "codebook/usage_batch": out["stats"]["usage"],
+                    "codebook/perplexity": out["stats"]["perplexity"],
+                    "codebook/quant_error": out["stats"]["quant_error"],
+                    "codebook/n_dead": health["n_dead"],
+                    "codebook/cluster_size_min": health["cluster_size_min"],
+                    "codebook/cluster_size_mean": health["cluster_size_mean"],
+                    "codebook/cluster_size_max": health["cluster_size_max"],
+                    "opt/lr_g": sched_g.get_last_lr()[0],
+                    "opt/lr_d": sched_d.get_last_lr()[0],
+                    "opt/grad_norm_g": gn_g,
+                    "opt/grad_norm_d": gn_d,
+                    "train/c_keep": (c_keep if c_keep is not None else total_channels),
+                    "train/img_per_s": ips,
+                    "train/epoch": epoch,
+                })
+                if device == "cuda":
+                    scalars["sys/gpu_mem_gb"] = torch.cuda.max_memory_allocated() / 1e9
+                wlog(scalars, step)
 
-            # ---- sample reconstructions ----
+            # ---- sample reconstructions (D: images) ----
             if step % tcfg["sample_every"] == 0:
                 tok.eval()
                 with torch.no_grad():
                     r = tok(fixed_batch)["recon"]
-                grid = make_grid(torch.cat([fixed_batch, r], 0).clamp(-1, 1) * 0.5 + 0.5,
-                                 nrow=8)
+                grid = make_grid(torch.cat([fixed_batch, r], 0).clamp(-1, 1) * 0.5 + 0.5, nrow=8)
                 save_image(grid, sample_dir / f"recon_{step:06d}.png")
+                wlog_images({"reconstructions": grid}, step)
                 tok.train()
 
-            # ---- checkpoint ----
+            # ---- periodic validation (E: paper metrics rFID/PSNR/SSIM + full utilization) ----
+            if step > 0 and step % tcfg.get("val_every", 1000) == 0:
+                metrics, images = validate(tok, ds, device, batch_size=tcfg["batch_size"],
+                                           compute_fid=tcfg.get("val_fid", True),
+                                           lpips_fn=crit.perceptual)
+                wlog(metrics, step); wlog_images(images, step)
+                print("  val:", {k: round(v, 4) for k, v in metrics.items()
+                                  if isinstance(v, float)})
+
+            # ---- checkpoint (F: durable artifact) ----
             if step > 0 and step % tcfg["ckpt_every"] == 0:
                 save_ckpt(ckpt_dir, tok, disc, opt_g, opt_d, step, epoch, cfg, ocfg["keep_last"])
+                log_ckpt_artifact(ckpt_dir / "latest.pt", step)
 
             step += 1
             if args.max_steps and step >= args.max_steps:
@@ -218,7 +286,15 @@ def main():
             break
 
     save_ckpt(ckpt_dir, tok, disc, opt_g, opt_d, step, epoch, cfg, ocfg["keep_last"])
+    # final validation + durable checkpoint artifact
+    metrics, images = validate(tok, ds, device, batch_size=tcfg["batch_size"],
+                               compute_fid=tcfg.get("val_fid", True), lpips_fn=crit.perceptual)
+    wlog(metrics, step); wlog_images(images, step)
+    print("final val:", {k: round(v, 4) for k, v in metrics.items() if isinstance(v, float)})
+    log_ckpt_artifact(ckpt_dir / "latest.pt", step)
     writer.close()
+    if use_wandb:
+        wandb.finish()
     print("training complete.")
 
 
