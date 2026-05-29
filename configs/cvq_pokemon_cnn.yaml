@@ -59,7 +59,7 @@ wandb:
   enabled: true
   project: cvq-pokemon
   entity: null
-  name: cvq-tokenizer-cnn-fromscratch
+  name: cvq-cnn-literal-cb16384-1k
   mode: online
   log_checkpoints: true
 

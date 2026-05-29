@@ -1,0 +1,73 @@
+# CVQ tokenizer — same 100% LITERAL setup as cvq_pokemon_cnn.yaml, but with the
+# codebook shrunk 16384 -> 4096. Rationale: the paper's high-utilization claim is at
+# ImageNet scale; at our ~1.3k-image scale a 16k codebook has far more entries than
+# the data can populate, so most stay cold and collapse looks worse. A smaller
+# codebook is the cheapest way to size capacity to the data WITHOUT adding any VQ
+# trick (no EMA / restart / L2-norm) — so it stays a clean, documentable modification.
+# Everything else is identical to the literal baseline for an apples-to-apples diff.
+
+data:
+  root: data
+  size: 256
+  hflip: true
+
+model:
+  encoder_type: cnn
+  freeze_encoder: false
+  siglip_name: google/siglip-base-patch16-256   # unused for cnn
+  siglip_layers: null
+  resolution: 256
+  latent_channels: 256
+  codebook_size: 4096        # <-- only change vs literal baseline (was 16384)
+  commitment_beta: 0.25
+  enc_ch: 128
+  enc_ch_mult: [1, 1, 2, 2, 4]
+  decoder_ch: 128
+  decoder_ch_mult: [1, 1, 2, 2, 4]
+  decoder_res_blocks: 2
+
+loss:
+  recon_loss_type: l2
+  perceptual_weight: 1.0
+  semantic_weight: 0.0
+  codebook_weight: 1.0
+  disc_weight: 1.0
+  disc_loss: hinge
+  lpips_net: vgg
+  gan_eta: 0.05
+
+train:
+  device: cuda
+  amp: bf16
+  batch_size: 16
+  grad_accum: 2
+  epochs: 100                # capped at 1000 steps via --max-steps for this experiment
+  lr: 1.0e-4
+  encoder_lr: 1.0e-4
+  beta1: 0.5
+  beta2: 0.9
+  weight_decay: 1.0e-4
+  warmup_steps: 2000
+  disc_start_step: 2000      # NOTE: > 1000-step cap, so GAN never turns on in this short run
+  nested_dropout_prob: 0.25
+  log_every: 50
+  sample_every: 500
+  ckpt_every: 1000
+  val_every: 1000
+  val_fid: true
+  num_workers: 8
+  seed: 0
+
+wandb:
+  enabled: true
+  project: cvq-pokemon
+  entity: null
+  name: cvq-cnn-literal-cb4096-1k
+  mode: online
+  log_checkpoints: true
+
+out:
+  ckpt_dir: checkpoints
+  sample_dir: samples
+  run_dir: runs
+  keep_last: 3
