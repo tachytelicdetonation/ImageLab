@@ -44,8 +44,18 @@ train:
   log_every: 25
   sample_every: 250
   ckpt_every: 500
+  val_every: 500
+  val_fid: false             # FID/Inception is heavy on MPS; skip locally
   num_workers: 2
   seed: 0
+
+wandb:
+  enabled: true              # on by default; falls back to offline if no WANDB_API_KEY
+  project: cvq-pokemon
+  entity: null
+  name: cvq-tokenizer-local
+  mode: online
+  log_checkpoints: false     # local disk is tight
 
 out:
   ckpt_dir: checkpoints

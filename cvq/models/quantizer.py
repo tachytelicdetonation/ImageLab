@@ -184,6 +184,7 @@ class ChannelwiseVQ(nn.Module):
         idxs = idxs.reshape(B, C)
 
         stats = self._codebook_stats(idxs)
+        stats["quant_error"] = commit.item()             # mean sq. dist to nearest code
         return z_q, idxs, loss, stats
 
     @torch.no_grad()
@@ -196,6 +197,21 @@ class ChannelwiseVQ(nn.Module):
         perplexity = torch.exp(-(nz * nz.log()).sum())
         usage = (counts > 0).float().mean()
         return {"perplexity": perplexity.item(), "usage": usage.item()}
+
+    @torch.no_grad()
+    def codebook_health(self) -> dict:
+        """EMA-based health of the codebook (independent of the current batch).
+
+        n_dead: codes below the restart threshold (candidates for being reseeded).
+        cluster_size {min/mean/max}: how evenly tokens are spread across codes.
+        """
+        cs = self.cluster_size_ema
+        return {
+            "n_dead": int((cs < self.restart_threshold).sum()),
+            "cluster_size_min": float(cs.min()),
+            "cluster_size_mean": float(cs.mean()),
+            "cluster_size_max": float(cs.max()),
+        }
 
     # ------------------------------------------------------------------ #
     # Nested channel dropout

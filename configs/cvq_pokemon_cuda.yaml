@@ -48,8 +48,18 @@ train:
   log_every: 50
   sample_every: 500
   ckpt_every: 1000
+  val_every: 1000            # periodic rFID/PSNR/SSIM/LPIPS + full codebook utilization
+  val_fid: true              # compute reconstruction FID (downloads Inception once)
   num_workers: 8
   seed: 0
+
+wandb:
+  enabled: true              # durable cloud logging (survives server destruction)
+  project: cvq-pokemon
+  entity: null               # set to your wandb username/team, or leave null for default
+  name: cvq-tokenizer-faithful
+  mode: online               # auto-falls back to offline if WANDB_API_KEY is unset
+  log_checkpoints: true      # back up model weights as a wandb Artifact
 
 out:
   ckpt_dir: checkpoints
