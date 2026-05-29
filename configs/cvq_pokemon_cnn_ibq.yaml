@@ -1,0 +1,80 @@
+# CVQ tokenizer — literal baseline + channel-wise IBQ quantizer.
+# The EOSTok (arXiv:2605.00503) x CVQ synthesis: EOSTok's discretizer is IBQ
+# (arXiv:2412.02692) = softmax-over-ALL-codes + straight-through + cosine-l2 logits +
+# entropy penalty + double-quant loss. Applied per CHANNEL-token (the CVQ axis) instead of
+# per spatial/query token. K=16384 x dim 256 is IBQ's native default. Per the synthesis
+# directive, IBQ REPLACES plain VQ where they conflict. APR + NTP losses are EOSTok's other
+# contributions and are deferred to phase 2 (they require the CAR). Over the 16k baseline,
+# identical to cvq_pokemon_cnn.yaml otherwise.
+
+data:
+  root: data
+  size: 256
+  hflip: true
+
+model:
+  encoder_type: cnn
+  freeze_encoder: false
+  siglip_name: google/siglip-base-patch16-256
+  siglip_layers: null
+  resolution: 256
+  latent_channels: 256
+  codebook_size: 16384       # IBQ native default; Table 6 notes K=4096 generates better (phase-2 concern)
+  commitment_beta: 0.25
+  quantizer_type: ibq
+  quantizer_kwargs:
+    ibq_entropy_weight: 0.05  # EOSTok 0.01; bumped for small data per reader's note
+    ibq_tau: 1.0
+    ibq_l2_norm: true
+    ibq_reg_weight: 1.0
+  enc_ch: 128
+  enc_ch_mult: [1, 1, 2, 2, 4]
+  decoder_ch: 128
+  decoder_ch_mult: [1, 1, 2, 2, 4]
+  decoder_res_blocks: 2
+
+loss:
+  recon_loss_type: l2
+  perceptual_weight: 1.0
+  semantic_weight: 0.0
+  codebook_weight: 1.0
+  disc_weight: 1.0
+  disc_loss: hinge
+  lpips_net: vgg
+  gan_eta: 0.05
+
+train:
+  device: cuda
+  amp: bf16
+  batch_size: 16
+  grad_accum: 2
+  epochs: 100
+  lr: 1.0e-4
+  encoder_lr: 1.0e-4
+  beta1: 0.5
+  beta2: 0.9
+  weight_decay: 1.0e-4
+  warmup_steps: 2000
+  disc_start_step: 2000
+  nested_dropout_prob: 0.25
+  log_every: 50
+  sample_every: 500
+  ckpt_every: 1000
+  val_every: 1000
+  val_fid: true
+  num_workers: 8
+  seed: 0
+
+wandb:
+  enabled: true
+  project: cvq-pokemon
+  entity: null
+  name: cvq-cnn-ibq-cb16384-1k
+  mode: online
+  log_checkpoints: true
+
+out:
+  ckpt_dir: checkpoints
+  sample_dir: samples
+  run_dir: runs
+  keep_last: 3

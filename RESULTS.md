@@ -55,6 +55,7 @@ Only promising trajectories graduate to a full run.
 | 5 | 2026-05-29 | TransVQ (frozen cb + transformer) | 1000 | 16384 | _tbd_ | _tbd_ | _tbd_ | 🟡 |
 | 6 | 2026-05-29 | FVQ / VQBridge | 1000 | 16384 | _tbd_ | _tbd_ | _tbd_ | 🟡 |
 | 7 | 2026-05-29 | Wasserstein matching (γ=0.5) | 1000 | 16384 | _tbd_ | _tbd_ | _tbd_ | 🟡 |
+| 8 | 2026-05-29 | **IBQ channel-wise** (EOSTok synth) | 1000 | 16384 | _tbd_ | _tbd_ | _tbd_ | 🟡 |
 
 ---
 
@@ -164,6 +165,29 @@ what the three structural methods target.
   sliced-Wasserstein and not Sinkhorn — the paper uses the Gaussian/FID form.
 - **Caveat:** Gaussian assumption + 256-D covariance from B·C≈4k tokens; ε-ridge for stability.
 - **Cost:** +1.05M params (codebook). Config: `cvq_pokemon_cnn_wasserstein.yaml`. **Result:** _tbd_
+
+### Run 8 — IBQ channel-wise — the EOSTok synthesis (`cvq-cnn-ibq-cb16384-1k`) ⭐ highest-potential bet
+- **Papers:** [EOSTok arXiv:2605.00503](https://arxiv.org/abs/2605.00503) (ICML 2026) + its quantizer
+  [IBQ arXiv:2412.02692](https://arxiv.org/abs/2412.02692). **2605.00503 = EOSTok** (End-to-End AR
+  Image Gen w/ 1D Semantic Tokenizer); its discretizer is **IBQ off-the-shelf**.
+- **Synthesis (the requested combination):** apply IBQ **per channel-token** (the CVQ axis)
+  instead of per spatial/query token. Per the directive, IBQ **replaces** plain VQ where they
+  conflict. IBQ = softmax over ALL K codes (cosine-ℓ2 logits, τ=1) + straight-through on the
+  full distribution → every code gets gradient every step (anti-collapse, ~100% util in EOSTok)
+  + double-quant loss (Eq.12, β=0.25) + entropy penalty (w=0.05, bumped from 0.01 for small data).
+  K=16384 × dim 256 = IBQ's native default → no dimensional clash.
+- **What we did NOT adopt (and why):** EOSTok's 1D ViT tokenizer + "drop the 2D prior" are about
+  *raster-order spatial AR*, orthogonal to our channel-wise quantizer — kept our VQGAN CNN enc/dec.
+  **APR loss + NTP** are EOSTok's standout anti-collapse glue but require the autoregressive model
+  → **deferred to phase 2 (CAR)**. APR is the top phase-2 candidate: it's what stops the
+  channel-AR loss from collapsing the codebook (EOSTok Table 1: usage 51.8% → 99.7% with APR).
+- **Implementation:** `IBQChannelVQ` in `cvq/models/vq_variants.py`. Index-backprop STE
+  `Ind = onehot + (p − sg[p])`, `z_q = Ind @ C` (no additive STE — grad to encoder flows through
+  the softmax, IBQ's design). Config: `cvq_pokemon_cnn_ibq.yaml`. **Cost:** +4.2M (codebook).
+- **Hypothesis:** this is the most principled small-scale collapse fix of the set — softmax-over-all
+  is a strictly stronger anti-collapse signal than the frozen-codebook reparam tricks, and it's
+  validated at ~100% util in the source paper. Expect the best utilization + non-diverging vq_loss.
+- **Result:** _tbd_
 
 ---
 
