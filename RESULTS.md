@@ -243,6 +243,18 @@ what the three structural methods target.
   `avg_maxprob` (should rise); fix = `ibq_entropy_weight` 0.05→0.02.
 - **Result:** _running/tbd_
 
+### Run 9b — IBQ × TransVQ with LEARNABLE base codebook (`cvq-cnn-ibqtransvq-learnable-cb16384-1k`) 🟡 queued
+- **Question:** is freezing the base codebook actually better, or is a *learnable* base (more
+  flexible) better given IBQ's dense softmax should keep it alive even with φ on top? Tests the
+  "learnable is more flexible/better" intuition head-to-head with frozen Run 9.
+- **Design:** identical to Run 9 but `base_learnable=true` → base `C` is an `nn.Parameter`
+  (9.05M trainable: 4.85M φ + 4.19M base C) instead of a frozen buffer.
+- **Why it might win:** more capacity/flexibility; IBQ's per-step dense gradient may prevent the
+  learnable-`C` collapse that killed plain VQ. **Why it might lose:** reintroduces per-code freedom
+  (collapse risk) + adds variance; φ may become partly redundant (design agent's "Alt A", which it
+  predicted *strictly worse* for max-utilization). Config: `cvq_pokemon_cnn_ibqtransvq_learnable.yaml`.
+- **Result:** _queued/tbd_
+
 ---
 
 ## Phase-2 (CAR) toolbox — evaluated, parked until the autoregressive model exists

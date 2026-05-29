@@ -486,7 +486,7 @@ class IBQTransVQ(_VariantBase):
                  ibq_entropy_weight: float = 0.05, ibq_tau: float = 1.0,
                  ibq_l2_norm: bool = False, ibq_reg_weight: float = 1.0,
                  transvq_depth: int = 1, transvq_model_dim: int = 256,
-                 transvq_frozen_dim: int = 256, **_ignore):
+                 transvq_frozen_dim: int = 256, base_learnable: bool = False, **_ignore):
         super().__init__()
         self.codebook_size = codebook_size
         self.token_dim = token_dim
@@ -495,15 +495,22 @@ class IBQTransVQ(_VariantBase):
         self.tau = ibq_tau
         self.l2_norm = ibq_l2_norm
         self.reg_weight = ibq_reg_weight
+        self.base_learnable = base_learnable
+        # Base codebook C: frozen buffer (TransVQ-faithful) by default; base_learnable=True
+        # makes it an nn.Parameter to test whether IBQ's dense softmax keeps a *learnable* C
+        # alive even with phi on top (the "more flexible" hypothesis).
         cb = torch.randn(codebook_size, transvq_frozen_dim) * (transvq_frozen_dim ** -0.5)
-        self.register_buffer("frozen_codebook", cb)               # FROZEN base C (TransVQ)
-        self.transform = _CodebookTransformer(                    # the only codebook params: phi
+        if base_learnable:
+            self.base_codebook = nn.Parameter(cb)
+        else:
+            self.register_buffer("base_codebook", cb)
+        self.transform = _CodebookTransformer(                    # phi (always trainable)
             transvq_frozen_dim, token_dim, codebook_size,
             depth=transvq_depth, model_dim=transvq_model_dim,
         )
 
     def _effective_codebook(self) -> torch.Tensor:
-        return self.transform(self.frozen_codebook)               # C' = P_phi(C), grad -> phi
+        return self.transform(self.base_codebook)                 # C' = P_phi(C)
 
     def forward(self, z: torch.Tensor):
         B, C, h, w = z.shape
