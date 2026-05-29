@@ -456,6 +456,98 @@ class IBQChannelVQ(_VariantBase):
 
 
 # --------------------------------------------------------------------------- #
+# IBQ x TransVQ — index-backprop softmax against a transformer-remapped FROZEN codebook.
+# (IBQ arXiv:2412.02692 / EOSTok 2605.00503  x  TransVQ arXiv:2602.18896)
+# --------------------------------------------------------------------------- #
+class IBQTransVQ(_VariantBase):
+    """Synthesis of TransVQ + IBQ for simultaneous max-utilization + max-reconstruction.
+
+    Codebook side (TransVQ): a FROZEN base codebook C (buffer) is remapped every step by a
+    shared 1-layer linear-attention transformer P_phi into the EFFECTIVE codebook C'=P_phi(C).
+    phi is shared across all K codes and C is frozen, so every code's gradient flows through
+    phi -> one phi step moves the whole codebook -> dead codes are structurally impossible.
+
+    Assignment/STE side (IBQ): softmax over ALL K codes with UNNORMALIZED dot-product logits
+    (cosine is degenerate at K=16384) + index-backprop STE. z_q = Ind @ C' with NO additive
+    STE -> encoder grad flows through the softmax, codebook grad flows into phi.
+
+    Why they compose (not fight): IBQ's dense softmax gives phi a K-term gradient every step
+    (better-conditioned than TransVQ's single-code STE); freezing C routes ALL codebook
+    learning through shared phi, making "every code gets gradient" a structural invariant.
+    L_Q.term2 trains phi here (C frozen) — the same role as TransVQ's codebook loss, not
+    double-counted. Only ONE STE (IBQ's); TransVQ's additive STE is intentionally dropped
+    (it would detach C' from the recon path and kill IBQ's reconstruction-quality mechanism).
+    Main risk: triple spread-pressure (phi + softmax + entropy) may over-smooth assignments —
+    watch avg_maxprob (should rise); if PSNR < IBQ's, drop ibq_entropy_weight to 0.02.
+    """
+
+    def __init__(self, codebook_size: int = 16384, token_dim: int = 256,
+                 commitment_beta: float = 0.25,
+                 ibq_entropy_weight: float = 0.05, ibq_tau: float = 1.0,
+                 ibq_l2_norm: bool = False, ibq_reg_weight: float = 1.0,
+                 transvq_depth: int = 1, transvq_model_dim: int = 256,
+                 transvq_frozen_dim: int = 256, **_ignore):
+        super().__init__()
+        self.codebook_size = codebook_size
+        self.token_dim = token_dim
+        self.commitment_beta = commitment_beta
+        self.entropy_weight = ibq_entropy_weight
+        self.tau = ibq_tau
+        self.l2_norm = ibq_l2_norm
+        self.reg_weight = ibq_reg_weight
+        cb = torch.randn(codebook_size, transvq_frozen_dim) * (transvq_frozen_dim ** -0.5)
+        self.register_buffer("frozen_codebook", cb)               # FROZEN base C (TransVQ)
+        self.transform = _CodebookTransformer(                    # the only codebook params: phi
+            transvq_frozen_dim, token_dim, codebook_size,
+            depth=transvq_depth, model_dim=transvq_model_dim,
+        )
+
+    def _effective_codebook(self) -> torch.Tensor:
+        return self.transform(self.frozen_codebook)               # C' = P_phi(C), grad -> phi
+
+    def forward(self, z: torch.Tensor):
+        B, C, h, w = z.shape
+        D = h * w
+        assert D == self.token_dim, f"token_dim mismatch: expected {self.token_dim}, got {D}."
+        in_dtype = z.dtype
+        tok = z.reshape(B, C, D)
+        with _no_autocast(tok):
+            tok = tok.float()
+            cb = self._effective_codebook().float()               # (K, D) = C'
+            tn = F.normalize(tok, dim=-1) if self.l2_norm else tok
+            cn = F.normalize(cb, dim=-1) if self.l2_norm else cb
+            logits = torch.einsum("bcd,kd->bck", tn, cn) / self.tau
+            p = logits.softmax(dim=-1)
+            idxs = p.argmax(dim=-1)
+            hard = F.one_hot(idxs, self.codebook_size).type_as(p)
+            Ind = hard + (p - p.detach())                         # IBQ STE: hard fwd, soft grad
+
+            z_q_soft = torch.einsum("bck,kd->bcd", Ind, cb)       # recon path: grad -> enc + phi
+            z_q_hard = torch.einsum("bck,kd->bcd", hard, cb)
+
+            term1 = F.mse_loss(z_q_soft, tok)                     # soft consistency
+            term2 = F.mse_loss(z_q_hard, tok.detach())            # codebook update -> trains phi
+            term3 = F.mse_loss(tok, z_q_hard.detach())            # commitment -> trains encoder
+            l_q = term1 + term2 + self.commitment_beta * term3
+
+            ent_token = -(p * (p + 1e-9).log()).sum(-1).mean()
+            p_bar = p.mean(dim=(0, 1))
+            ent_batch = -(p_bar * (p_bar + 1e-9).log()).sum()
+            l_e = ent_token - ent_batch
+            loss = self.reg_weight * l_q + self.entropy_weight * l_e
+
+        z_q = z_q_soft.reshape(B, C, h, w).to(in_dtype)
+        idxs = idxs.reshape(B, C)
+        stats = _usage_perplexity(idxs, self.codebook_size)
+        stats["quant_error"] = term3.item()
+        stats["entropy_loss"] = l_e.item()
+        stats["entropy_per_sample"] = ent_token.item()
+        stats["entropy_marginal"] = ent_batch.item()
+        stats["avg_maxprob"] = p.max(-1).values.mean().item()
+        return z_q, idxs, loss, stats
+
+
+# --------------------------------------------------------------------------- #
 # Factory
 # --------------------------------------------------------------------------- #
 _REGISTRY = {
@@ -464,6 +556,7 @@ _REGISTRY = {
     "fvq": FVQ,
     "wasserstein": WassersteinVQ,
     "ibq": IBQChannelVQ,
+    "ibqtransvq": IBQTransVQ,
 }
 
 

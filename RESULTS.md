@@ -225,6 +225,24 @@ what the three structural methods target.
   diverged here). Coarse-to-fine intact (recon_L2 c8 0.160 → c256 0.113). Confirms the hypothesis:
   softmax-over-all-codes is the strongest mechanism; ties TransVQ on quality, slightly lower util.
 
+### Run 9 — IBQ × TransVQ synthesis (`cvq-cnn-ibqtransvq-cb16384-1k`) 🟡 queued
+- **Goal:** combine the two winners — TransVQ's best utilization (94.2%) + IBQ's best reconstruction
+  (PSNR 16.53) — into one quantizer.
+- **Design:** frozen base codebook `C` (buffer) → `C' = P_φ(C)` (TransVQ's 1-layer linear-attention
+  transformer) → IBQ's softmax-over-all-codes + index-backprop STE + double-quant loss + entropy,
+  all against `C'`. Dot-product logits. **Only IBQ's STE** (TransVQ's additive STE dropped — it would
+  detach `C'` from the recon path). `C` frozen so *all* codebook learning routes through shared φ.
+- **Why it should compose (not fight):** IBQ's dense softmax gives φ a **K-term gradient per step**
+  (vs TransVQ's single-code STE — sparser, noisier), and freezing `C` makes "every code gets gradient"
+  a structural invariant (proof: `∂L/∂φ = Σ_k (∂L/∂C'_k)(∂C'_k/∂φ)`, all K terms nonzero).
+- **Implementation:** `IBQTransVQ` in `vq_variants.py` (4.85M trainable φ + 4.19M frozen buffer).
+  Config: `cvq_pokemon_cnn_ibqtransvq.yaml`. Smoke test: avg_maxprob 0.67 at init (sharp — φ remap
+  gives peaked logits, so the over-smoothing risk looks mild).
+- **Prediction (from design agent):** beats both parents on utilization (→high-90s%), ties/slightly
+  beats IBQ on recon (PSNR ≈16.5–16.7); ~30% risk triple spread-pressure over-smooths → watch
+  `avg_maxprob` (should rise); fix = `ibq_entropy_weight` 0.05→0.02.
+- **Result:** _running/tbd_
+
 ---
 
 ## Phase-2 (CAR) toolbox — evaluated, parked until the autoregressive model exists
