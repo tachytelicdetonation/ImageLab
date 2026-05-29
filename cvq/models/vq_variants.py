@@ -393,13 +393,19 @@ class IBQChannelVQ(_VariantBase):
     def __init__(self, codebook_size: int = 16384, token_dim: int = 256,
                  commitment_beta: float = 0.25,
                  ibq_entropy_weight: float = 0.05, ibq_tau: float = 1.0,
-                 ibq_l2_norm: bool = True, ibq_reg_weight: float = 1.0, **_ignore):
+                 ibq_l2_norm: bool = False, ibq_reg_weight: float = 1.0, **_ignore):
         super().__init__()
         self.codebook_size = codebook_size
         self.token_dim = token_dim
         self.commitment_beta = commitment_beta
         self.entropy_weight = ibq_entropy_weight
         self.tau = ibq_tau
+        # logits = z·C: IBQ-canonical UNNORMALIZED dot product (arXiv:2412.02692 Eq.3-4).
+        # Unbounded magnitude lets the softmax sharpen as the encoder learns -> the
+        # index-backprop gradient + entropy penalty can actually do their job.
+        # l2_norm=True switches to EOSTok's cosine variant (Eq.7), which is DEGENERATE at
+        # tau=1 with a large K (cosine in [-1,1] => softmax stays ~uniform over 16384 codes);
+        # if you use it, pass a CLIP-style sharpening temperature (e.g. ibq_tau≈0.07).
         self.l2_norm = ibq_l2_norm
         self.reg_weight = ibq_reg_weight
         self.embed = nn.Embedding(codebook_size, token_dim)
