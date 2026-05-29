@@ -1,0 +1,84 @@
+# CVQ tokenizer — EOSTok-FAITHFUL channel-wise IBQ (cosine variant).
+#
+# This is the one place EOSTok (arXiv:2605.00503) diverges from the original IBQ paper
+# (arXiv:2412.02692): EOSTok "stabilizes codebook training by applying an l2 normalization on
+# both the codebook C and the continuous latent embedding when computing their similarity"
+# (its Eq.7 -> COSINE logits), and runs K=4096. The double-quant loss and entropy loss are
+# IBQ's, adopted unchanged. So this config differs from cvq_pokemon_cnn_ibq.yaml ONLY in the
+# quantizer: ibq_l2_norm=true (cosine), K=4096, entropy_weight=0.01 (EOSTok's value).
+#
+# NB on fidelity limits of the channel-wise transposition:
+#   * EOSTok uses entry dim d=64; here the entry dim = token_dim = h*w = 256 is fixed by the CVQ
+#     geometry (each CHANNEL of a 16x16 grid is a token), so d=256 cannot be matched.
+#   * EOSTok keeps tau=1. At d=256 cosine similarities concentrate near 0, so the quant softmax
+#     over K=4096 starts nearly uniform; the sharpened entropy term (tau_E=0.01) + index-backprop
+#     are what must carry it. If the soft path degenerates (z_q -> codebook mean), the lever is a
+#     CLIP-style sharpening tau (~0.07), not a code change. Watch val/codebook_utilization_full.
+
+data:
+  root: data
+  size: 256
+  hflip: true
+
+model:
+  resolution: 256
+  latent_channels: 256
+  codebook_size: 4096          # EOSTok default (it also tested {1024,2048,8192,16384})
+  commitment_beta: 0.25
+  quantizer_type: ibq          # ignored (single quantizer); kept for provenance
+  quantizer_kwargs:
+    ibq_l2_norm: true             # EOSTok Eq.7 — l2-normalize latent + codebook for the similarity (COSINE)
+    ibq_tau: 1.0                  # EOSTok keeps tau=1 on the quant softmax
+    ibq_entropy_weight: 0.01      # EOSTok's entropy weight (vs 0.05 in the dot-product config)
+    ibq_reg_weight: 1.0
+    ibq_entropy_temperature: 0.01 # IBQ/MAGVIT-v2 sharpened softmax for the entropy loss
+  enc_ch: 128
+  enc_ch_mult: [1, 1, 2, 2, 4]
+  decoder_ch: 128
+  decoder_ch_mult: [1, 1, 2, 2, 4]
+  decoder_res_blocks: 2
+
+loss:
+  recon_loss_type: l2
+  perceptual_weight: 1.0
+  codebook_weight: 1.0
+  disc_weight: 1.0
+  disc_loss: hinge
+  lpips_net: vgg
+  gan_eta: 0.05
+
+train:
+  device: cuda
+  amp: bf16
+  batch_size: 16
+  grad_accum: 2
+  epochs: 100
+  lr: 1.0e-4
+  encoder_lr: 1.0e-4
+  beta1: 0.5
+  beta2: 0.9
+  weight_decay: 1.0e-4
+  warmup_steps: 2000
+  disc_start_step: 2000
+  nested_dropout_prob: 0.25
+  log_every: 50
+  sample_every: 500
+  ckpt_every: 1000
+  val_every: 1000
+  val_fid: true
+  num_workers: 8
+  seed: 0
+
+wandb:
+  enabled: true
+  project: cvq-pokemon
+  entity: null
+  name: cvq-cnn-eostok-cosine-cb4096
+  mode: online
+  log_checkpoints: true
+
+out:
+  ckpt_dir: checkpoints
+  sample_dir: samples
+  run_dir: runs
+  keep_last: 3

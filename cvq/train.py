@@ -3,8 +3,8 @@ Train the CVQ tokenizer on the Pokemon dataset.
 
 Single-device (MPS/CPU) adaptation of the paper's multi-node torchrun recipe. Keeps
 the faithful pieces — AdamW(beta1=0.5, beta2=0.9), LPIPS + PatchGAN, nested channel
-dropout with the channel-count-aware GAN weight, EMA codebook — and scales batch via
-gradient accumulation instead of 8 GPUs.
+dropout with the channel-count-aware GAN weight, index-backprop IBQ codebook — and
+scales batch via gradient accumulation instead of 8 GPUs.
 
 Run:
     python -m cvq.train --config configs/cvq_pokemon.yaml
@@ -16,7 +16,6 @@ import argparse
 import os
 import time
 from contextlib import nullcontext
-from functools import partial
 from pathlib import Path
 
 import torch
@@ -111,14 +110,9 @@ def main():
 
     # ---- models ----
     tok = CVQTokenizer(
-        encoder_type=mcfg.get("encoder_type", "siglip"),
-        siglip_name=mcfg["siglip_name"], siglip_layers=mcfg["siglip_layers"],
-        freeze_encoder=mcfg["freeze_encoder"], resolution=cfg["data"]["size"],
+        resolution=cfg["data"]["size"],
         latent_channels=mcfg["latent_channels"],
         codebook_size=mcfg["codebook_size"], commitment_beta=mcfg["commitment_beta"],
-        entropy_weight=mcfg.get("entropy_weight", 0.0),
-        entropy_temperature=mcfg.get("entropy_temperature", 1.0),
-        quantizer_type=mcfg.get("quantizer_type", "plain"),
         quantizer_kwargs=mcfg.get("quantizer_kwargs", None),
         enc_ch=mcfg.get("enc_ch", 128), enc_ch_mult=tuple(mcfg.get("enc_ch_mult", [1, 1, 2, 2, 4])),
         decoder_ch=mcfg["decoder_ch"], decoder_ch_mult=tuple(mcfg["decoder_ch_mult"]),
@@ -128,7 +122,7 @@ def main():
 
     crit = CVQLoss(
         disc_start=tcfg["disc_start_step"], recon_loss_type=lcfg["recon_loss_type"],
-        perceptual_weight=lcfg["perceptual_weight"], semantic_weight=lcfg["semantic_weight"],
+        perceptual_weight=lcfg["perceptual_weight"],
         codebook_weight=lcfg["codebook_weight"], disc_weight=lcfg["disc_weight"],
         disc_loss=lcfg["disc_loss"], lpips_net=lcfg["lpips_net"], gan_eta=lcfg["gan_eta"],
     ).to(device)
@@ -136,11 +130,9 @@ def main():
     betas = (tcfg["beta1"], tcfg["beta2"])
     wd = tcfg["weight_decay"]
     optim_name = tcfg.get("optimizer", "adamw").lower()
-    siglip_stage2 = mcfg.get("encoder_type", "siglip") == "siglip" and not mcfg["freeze_encoder"]
     if optim_name in ("muon", "pion"):
         # EXPERIMENTAL optimizer swap: Muon/Pion orthogonalized update on 2D weight matrices
         # (conv reshaped to 2D), AdamW on embeddings/codebook/norm-gamma-beta/biases.
-        # (Stage-II SigLIP split-lr not supported on this path.)
         from cvq.muon import MuonAdamW, build_muon_groups
         muon_lr = tcfg.get("muon_lr", 0.02)
         g_groups = build_muon_groups(
@@ -153,21 +145,10 @@ def main():
         opt_g = MuonAdamW(g_groups)
         print(f"optimizer: {optim_name} | muon_lr={muon_lr} adamw_lr={tcfg['lr']} | "
               f"{len(g_groups)} param groups")
-    elif not siglip_stage2:
-        # CNN-from-scratch OR frozen-SigLIP Stage I: one lr, split into decay/no-decay.
+    else:
+        # CNN-from-scratch: one lr, split into decay/no-decay groups.
         g_groups = split_decay_groups(tok.trainable_parameters(), tcfg["lr"], wd)
         opt_g = torch.optim.AdamW(g_groups, betas=betas, weight_decay=wd)
-    else:
-        # Stage II (end-to-end): finetune a *pretrained* SigLIP at a lower lr than the
-        # fresh head (paper Stage-II lr 2e-5 vs Stage-I 1e-4). Each at its own lr, each
-        # further split into decay/no-decay groups.
-        head = list(tok.adapter.parameters()) + list(tok.decoder.parameters())
-        enc = [p for p in tok.encoder.parameters() if p.requires_grad]
-        enc_lr = tcfg.get("encoder_lr", tcfg["lr"] * 0.2)
-        g_groups = (split_decay_groups(head, tcfg["lr"], wd)
-                    + split_decay_groups(enc, enc_lr, wd))
-        opt_g = torch.optim.AdamW(g_groups, betas=betas, weight_decay=wd)
-        print(f"Stage II: finetuning encoder at lr={enc_lr:.1e}")
     gen_params = [p for grp in g_groups for p in grp["params"]]
     opt_d = torch.optim.AdamW(split_decay_groups(list(disc.parameters()), tcfg["lr"], wd),
                               betas=betas, weight_decay=wd)
@@ -226,8 +207,6 @@ def main():
 
     for epoch in range(start_epoch, tcfg["epochs"]):
         tok.train(); disc.train()
-        # Run SigLIP on the reconstruction WITH grad (param-frozen) for the semantic loss.
-        sem_encode = partial(tok.encoder, with_grad=True)
         for i, batch in enumerate(dl):
             x = batch["image"].to(device)
             c_keep = sample_c_keep(total_channels, tcfg["nested_dropout_prob"], gen)
@@ -247,8 +226,7 @@ def main():
                 g_total, g_logs = crit.generator_step(
                     target=x, recon=recon, vq_loss=vq_loss, discriminator=disc,
                     last_layer=last_layer, global_step=step, c_keep=c_keep,
-                    total_channels=total_channels, siglip_real=out["siglip_feat"],
-                    siglip_recon_fn=sem_encode,
+                    total_channels=total_channels,
                 )
             (g_total / accum).backward()
             for p in disc.parameters():
@@ -292,8 +270,6 @@ def main():
                         "codebook/entropy_per_sample": out["stats"]["entropy_per_sample"],
                         "codebook/entropy_marginal": out["stats"]["entropy_marginal"],
                     })
-                if "wasserstein" in out["stats"]:
-                    scalars["codebook/wasserstein"] = out["stats"]["wasserstein"]
                 scalars.update({
                     "opt/lr_g": sched_g.get_last_lr()[0],
                     "opt/lr_d": sched_d.get_last_lr()[0],
@@ -329,7 +305,7 @@ def main():
                 score = metrics.get("val/rFID", metrics.get("val/recon_l2_full", float("inf")))
                 if score < best_score:
                     best_score = score
-                    torch.save({"tokenizer": _tok_state_no_encoder(tok), "config": cfg,
+                    torch.save({"tokenizer": _tok_state(tok), "config": cfg,
                                 "step": step, "score": score}, ckpt_dir / "best.pt")
                     log_ckpt_artifact(ckpt_dir / "best.pt", step, aliases=["best"])
                     print(f"  new best ({score:.4f}) -> best.pt")
@@ -359,15 +335,15 @@ def main():
     print("training complete.")
 
 
-def _tok_state_no_encoder(tok):
-    # The frozen SigLIP backbone is reproducible from HF — don't bloat checkpoints
-    # (~370MB) with it. Persist only the trainable adapter/decoder + EMA codebook.
-    return {k: v for k, v in tok.state_dict().items() if not k.startswith("encoder.")}
+def _tok_state(tok):
+    # The whole tokenizer is trained from scratch (CNN encoder + codebook + decoder),
+    # so the full state is persisted.
+    return tok.state_dict()
 
 
 def save_ckpt(ckpt_dir: Path, tok, disc, opt_g, opt_d, step, epoch, cfg, keep_last):
     path = ckpt_dir / f"cvq_step{step:06d}.pt"
-    tok_state = _tok_state_no_encoder(tok)
+    tok_state = _tok_state(tok)
     torch.save({
         "tokenizer": tok_state, "disc": disc.state_dict(),
         "opt_g": opt_g.state_dict(), "opt_d": opt_d.state_dict(),

@@ -13,20 +13,17 @@ data:
   hflip: true
 
 model:
-  encoder_type: cnn
-  freeze_encoder: false
-  siglip_name: google/siglip-base-patch16-256
-  siglip_layers: null
   resolution: 256
   latent_channels: 256
   codebook_size: 16384       # IBQ native default; Table 6 notes K=4096 generates better (phase-2 concern)
   commitment_beta: 0.25
   quantizer_type: ibq
   quantizer_kwargs:
-    ibq_entropy_weight: 0.05  # EOSTok 0.01; bumped for small data per reader's note
-    ibq_tau: 1.0
-    ibq_l2_norm: false        # IBQ-canonical dot product (Eq.3-4). cosine@tau=1 is degenerate at K=16384.
+    ibq_entropy_weight: 0.05      # matches official imagenet_ibqgan_16384.yaml (0.05; 0.1 is the code default)
+    ibq_tau: 1.0                  # quant softmax temperature; official uses raw logits (=1.0)
+    ibq_l2_norm: false            # IBQ-canonical dot product (Eq.3-4). cosine@tau=1 is degenerate at K=16384.
     ibq_reg_weight: 1.0
+    ibq_entropy_temperature: 0.01 # official entropy_temperature: sharpened softmax for the entropy loss
   enc_ch: 128
   enc_ch_mult: [1, 1, 2, 2, 4]
   decoder_ch: 128
@@ -36,7 +33,6 @@ model:
 loss:
   recon_loss_type: l2
   perceptual_weight: 1.0
-  semantic_weight: 0.0
   codebook_weight: 1.0
   disc_weight: 1.0
   disc_loss: hinge

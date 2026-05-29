@@ -2,19 +2,16 @@
 CVQ training losses.
 
 Faithful to the VQGAN / taming-transformers objective that VILA-U & CVQ inherit:
-    L = L_recon (L1/L2) + w_perc * LPIPS + w_sem * L_semantic
+    L = L_recon (L1/L2) + w_perc * LPIPS
         + lambda_adaptive * disc_factor * lambda_gan(c_keep) * L_GAN
 plus the channel-wise VQ commitment loss (computed inside the quantizer).
 
-Two paper-specific pieces:
+One paper-specific piece:
   * lambda_gan(c_keep): the adaptive GAN weight from arXiv:2605.26089 eq.,
         lambda_gan(c_keep) = lambda0 / (1 + exp(-eta * (c_keep - C/2)))
     so the adversarial term is weak when few channels are kept (a coarse, blurry
     reconstruction is *expected* to look unreal) and strong when many channels are
     kept (it should be sharp). eta=0.05, lambda0=1 per the paper.
-  * L_semantic: a SigLIP feature-space consistency loss honoring sem_weight=1. We
-    push the frozen-SigLIP embedding of the reconstruction toward that of the input,
-    preserving semantic content through the channel-wise bottleneck.
 
 `calculate_adaptive_weight` is taming's trick: it rescales the GAN gradient to match
 the perceptual-loss gradient magnitude at the decoder's last layer, which stabilizes
@@ -54,7 +51,6 @@ class CVQLoss(nn.Module):
         disc_start: int,                 # global step at which the GAN turns on
         recon_loss_type: str = "l1",     # "l1" or "l2" (paper states pixel-wise l2)
         perceptual_weight: float = 1.0,
-        semantic_weight: float = 1.0,    # sem_weight=1 in the README
         codebook_weight: float = 1.0,    # multiplies the quantizer commitment loss
         disc_weight: float = 0.8,        # base GAN weight (lambda0 territory)
         disc_loss: str = "hinge",
@@ -68,7 +64,6 @@ class CVQLoss(nn.Module):
         for p in self.perceptual.parameters():
             p.requires_grad_(False)
         self.perceptual_weight = perceptual_weight
-        self.semantic_weight = semantic_weight
         self.codebook_weight = codebook_weight
         self.disc_weight = disc_weight
         self.disc_start = disc_start
@@ -106,21 +101,11 @@ class CVQLoss(nn.Module):
         global_step,
         c_keep=None,
         total_channels=256,
-        siglip_real=None,
-        siglip_recon_fn=None,
     ):
         """Compute the generator/autoencoder loss and a dict of components."""
         rec = self._recon(recon, target)
         p_loss = self.perceptual(recon, target).mean() if self.perceptual_weight > 0 else recon.new_zeros(())
         nll = rec + self.perceptual_weight * p_loss
-
-        # Semantic consistency in frozen-SigLIP feature space (sem_weight).
-        sem_loss = recon.new_zeros(())
-        if self.semantic_weight > 0 and siglip_real is not None and siglip_recon_fn is not None:
-            siglip_recon = siglip_recon_fn(recon)               # (B, C, g, g)
-            r = siglip_real.flatten(1)
-            s = siglip_recon.flatten(1)
-            sem_loss = (1.0 - F.cosine_similarity(r, s, dim=1)).mean()
 
         # Adversarial term (only after disc_start).
         disc_factor = adopt_weight(1.0, global_step, threshold=self.disc_start)
@@ -140,7 +125,6 @@ class CVQLoss(nn.Module):
 
         total = (
             nll
-            + self.semantic_weight * sem_loss
             + self.codebook_weight * vq_loss
             + gan_term
         )
@@ -148,7 +132,6 @@ class CVQLoss(nn.Module):
             "loss/total": total.item(),
             "loss/recon": rec.item(),
             "loss/lpips": float(p_loss.item()) if torch.is_tensor(p_loss) else 0.0,
-            "loss/semantic": float(sem_loss.item()) if torch.is_tensor(sem_loss) else 0.0,
             "loss/vq": vq_loss.item(),
             "loss/g_adv": float(g_loss.item()) if torch.is_tensor(g_loss) else 0.0,
             "loss/adaptive_w": float(d_w.item()) if torch.is_tensor(d_w) else 0.0,

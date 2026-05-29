@@ -259,7 +259,34 @@ what the three structural methods target.
   on top. So IBQ×TransVQ is NOT stable over a long schedule — its 1k result is a peak, not a plateau.
   Plain IBQ, by contrast, was STABLE (improved 81.5%→90.6% from 1k→2k). **Implication: plain IBQ is the
   more robust long-schedule quantizer; the combo needs an entropy-weight reduction / early-stop to be
-  usable long.** (Plain-IBQ-4k one-to-one run in progress to confirm.)
+  usable long.**
+
+### Run 9c — Plain IBQ 4k, one-to-one vs the combo (`cvq-cnn-ibq-cb16384-4k`) 🔬 GAN-interaction control
+- **Goal (user's exact ask):** "I want to see how it interacts with GAN stuff — one-to-one comparison,
+  don't add any fix." Same commit as the combo-4k (94d7805, pre-no-decay), same GAN (on@2000, wt 1.0),
+  **only `quantizer_type` differs** (plain `ibq` vs `ibqtransvq`). Isolates what the GAN does from what
+  the φ-remap does.
+- **Result — the codebook does NOT collapse; the GAN crashes PSNR with util fully intact:**
+  | step | util_full | PSNR | batch ppl | ent |
+  |---|---|---|---|---|
+  | 1k | 81.5% | 16.53 | 748 (s400) | ~0 |
+  | 2k (GAN on) | **90.6%** | **16.66** | 271 (s1600) | ~0 |
+  | 3k | 88.8% | 13.86 | 160 | ~0 |
+  | 4k | **91.75%** | **13.57** | 160 | ~0 |
+- **The clean diagnosis (this is the payoff of the one-to-one):** the two 4k runs fail for *opposite*
+  reasons. **Combo:** codebook **collapsed** (util 90.5→24%) **before** the GAN, driven by φ-remap +
+  entropy over-sharpening (`ent` −3.0→−5.4). **Plain IBQ:** codebook is **rock-solid** (util *rose* to
+  91.75%, `ent`≈0 the whole way — no over-sharpening because there's no φ to interact with entropy), and
+  PSNR is flat (16.53→16.66) right up to step 2000, then **drops 16.66→13.57 the instant the GAN turns
+  on.** So the "dramatic degradation at ~2.5k" seen in the reconstruction images is **purely the GAN**:
+  the PatchGAN discriminator trades pixel fidelity for texture realism, and L2/PSNR pay for it while the
+  quantizer is unaffected. Note batch ppl falls (271→160) even as full util stays 91% — per-batch the
+  model leans on fewer codes, but across the val set it still touches 91% of the codebook (the two-metric
+  distinction from §⚠️ in action).
+- **Implication:** plain IBQ is the robust quantizer (confirmed). The remaining lever for a long
+  production run is **softening the GAN** (weight ~0.05, or a later `disc_start_step`), *not* the
+  quantizer — the codebook was never the problem for plain IBQ. The combo's collapse, by contrast, is a
+  quantizer-side problem (over-sharpening) that the GAN merely finishes off.
 
 ### Run 9b — IBQ × TransVQ with LEARNABLE base codebook (`cvq-cnn-ibqtransvq-learnable-cb16384-1k`)
 - **Question:** is freezing the base codebook actually better, or is a *learnable* base (more
@@ -279,6 +306,30 @@ what the three structural methods target.
   (frozen anchor + φ) > raw per-code flexibility, *specifically on generalization*. The "learnable is
   more flexible/better" intuition is refuted here. (Caveat: at ImageNet scale the verdict could flip —
   more data → less overfit → the extra capacity could pay off.)
+
+---
+
+## Optimizer experiments (everything else held at the plain-IBQ Run-8 recipe)
+
+### Run 10 — Pion optimizer (`cvq-cnn-ibq-pion-cb16384-1k`) ❌ loses to AdamW
+- **What:** swap AdamW → **Pion** (Muon's high-pass variant, [2605.19282](https://arxiv.org/abs/2605.19282),
+  repo `OPTML-Group/Pion`) on the plain-IBQ tokenizer. Hybrid: Pion (Newton-Schulz orthogonalization +
+  two-stage high-pass on singular values) on 2D weights + reshaped convs; AdamW on embeddings/norms/biases.
+  Implemented in `cvq/muon.py` (`MuonAdamW`, `build_muon_groups`); knob `optimizer: adamw|muon|pion`.
+  This run also carries the **no-decay fix** (norm γ/β + biases excluded from weight decay). `muon_lr=0.01`,
+  `pion_promotion_steps=0` (pure suppression). HEAD 5ba3b27.
+- **Result:** ❌ **AdamW wins on every metric.** Pion: util **72.1%**, PSNR **15.60**, LPIPS **0.344**,
+  recon_L2 **0.111**. vs AdamW (Run 8): util 81.5%, PSNR 16.53, LPIPS 0.306, recon_L2 0.090 — i.e.
+  −9.4 pts util, −0.93 dB PSNR. Training was stable (no NaN, loss fell normally) — it simply converged
+  to a worse point in 1k steps.
+- **Why (three confounds, none ruled out):** (1) **wrong domain** — Muon/Pion's proven gains are on
+  *transformer* matmuls; our plain-IBQ net is **conv-only** (convs reshaped to 2D and orthogonalized — the
+  regime Muon doesn't claim wins in). (2) **wrong regime** — Pion's high-pass is motivated for **RLVR/VLA**
+  low-rank/low-SNR gradients, with no claim for dense supervised reconstruction. (3) **`muon_lr=0.01` is an
+  untuned guess** (repo default 0.02; paper's true value didn't render).
+- **Fair-shot follow-ups (not yet run):** (a) base **`optimizer: muon`** (drop the RL-specific high-pass —
+  this is the real lever); (b) **`muon_lr` sweep** (0.02 / 0.005); (c) test Muon on the **combo** (Run 9),
+  which *has* a φ transformer — Muon's actual home turf. Until then: **AdamW stays the default.**
 
 ---
 

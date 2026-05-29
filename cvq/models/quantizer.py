@@ -1,21 +1,30 @@
 """
-Channel-wise Vector Quantization (CVQ) — 100% LITERAL to arXiv:2605.26089.
+Channel-wise IBQ — the project's single quantizer.
 
-Standard VQ quantizes each *spatial location* of a feature map. Channel-wise VQ
-transposes the axis: each *channel* z^(k) in (h, w) is flattened to an (h*w)-dim vector
-and matched against a shared codebook (entry dim = h*w). At 256x256 with f=16 the grid
-is 16x16, so token dim = 256 and channels c = 256 (the paper's "256 version").
+Channel-wise VQ (CVQ, arXiv:2605.26089) transposes the usual VQ axis: instead of quantizing
+each *spatial location*, each *channel* z^(k) in (h, w) is flattened to an (h*w)-dim vector and
+matched against a shared codebook (entry dim = h*w). At 256x256 with f=16 the grid is 16x16, so
+token dim = 256 and channels c = 256 (the paper's "256 version").
 
-    z_q^(k) = argmin_{e_n in C}  || z^(k) - e_n ||_2^2
-    forward (straight-through): z_q^(k) = z^(k) + sg[ e_n - z^(k) ]
-    L_vq = || sg[z] - e ||^2  +  beta * || z - sg[e] ||^2     (codebook + commitment)
+The assignment/STE here is IBQ — Index Backpropagation Quantization (arXiv:2412.02692, the
+discretizer inside EOSTok arXiv:2605.00503). Plain argmin-NN VQ collapsed at this scale (only
+the selected code gets gradient -> rich-get-richer dead codes). IBQ instead takes a SOFTMAX over
+ALL K codes and straight-throughs the full categorical distribution, so *every* code gets
+gradient every step. That is the anti-collapse mechanism that reaches ~100% utilization, which
+plain VQ / SimVQ / TransVQ / FVQ / Wasserstein / IBQxTransVQ were all screened against (see
+RESULTS.md). Plain IBQ was the robust long-schedule winner, so it is the only quantizer kept.
 
-This is PLAIN VQ exactly as the paper describes: a single gradient-updated codebook,
-**no EMA, no dead-code restart, no L2-normalization, no factorization**. The paper claims
-high codebook utilization from the channel-wise formulation *alone* ("without any bells
-and whistles"). Whether that holds at small (non-ImageNet) scale is an open question this
-implementation lets us measure directly — including the failure mode (codebook collapse),
-which is itself a valid data point.
+    logits = z . C                                  # (B,C,K) unnormalized dot product
+    p      = softmax(logits / tau)                  # tau=1 reproduces the official quant softmax
+    Ind    = onehot(argmax p) + (p - sg[p])         # hard forward, soft gradient (STE)
+    z_q    = Ind @ C                                # index-backprop: grad -> encoder + ALL codes
+    # Double-quant loss in the OFFICIAL SEED-Voken IBQ form. NB: the released code puts weight 1.0
+    # on the COMMITMENT term and beta on the CODEBOOK term -- the transpose of the paper's printed
+    # Eq.12. We follow the code, since that is what produced the reported ImageNet numbers.
+    L_Q    = ||z_q - z||^2 + ||sg[z_q'] - z||^2 + beta||z_q' - sg[z]||^2          (z_q' = hard@C)
+    L_E    = E[H(p_s)] - H(E[p_s]),  p_s = softmax(logits / tau_E)   # tau_E=0.01, sharpened
+
+APR + NTP losses are EOSTok's other contributions and are deferred to phase 2 (they need the CAR).
 """
 
 from __future__ import annotations
@@ -28,91 +37,89 @@ from torch.nn import functional as F
 
 
 def _no_autocast(t: torch.Tensor):
-    """Keep codebook distance math in fp32 even under bf16/fp16 autocast."""
+    """Keep codebook distance/softmax math in fp32 even under bf16/fp16 autocast."""
     return torch.autocast(device_type="cuda", enabled=False) if t.is_cuda else nullcontext()
 
 
-class ChannelwiseVQ(nn.Module):
+class IBQChannelVQ(nn.Module):
+    """Channel-wise IBQ. Per CHANNEL-token (dim D=h*w), quantized against a shared codebook
+    (K, D) -- K=16384, D=256 is IBQ's native default.
+
+    Logits are the IBQ-canonical UNNORMALIZED dot product z.C (arXiv:2412.02692 Eq.3-4); the
+    unbounded magnitude lets the softmax sharpen as the encoder learns, so the index-backprop
+    gradient + entropy penalty can actually do their job. `ibq_l2_norm=True` switches to
+    EOSTok's cosine variant (Eq.7), which is DEGENERATE at tau=1 with a large K (cosine in
+    [-1,1] => softmax stays ~uniform over 16384 codes); if you use it, pass a CLIP-style
+    sharpening temperature (e.g. ibq_tau~=0.07).
+    """
+
     def __init__(self, codebook_size: int = 16384, token_dim: int = 256,
                  commitment_beta: float = 0.25,
-                 entropy_weight: float = 0.0, entropy_temperature: float = 1.0,
-                 **_ignore):
+                 ibq_entropy_weight: float = 0.05, ibq_tau: float = 1.0,
+                 ibq_l2_norm: bool = False, ibq_reg_weight: float = 1.0,
+                 ibq_entropy_temperature: float = 0.01, **_ignore):
         super().__init__()
         self.codebook_size = codebook_size
         self.token_dim = token_dim
         self.commitment_beta = commitment_beta
-        # Entropy regularization (MAGVIT-v2 / VQGAN lineage; arXiv:2310.05737). A
-        # MODIFICATION on top of the literal paper: weight 0.0 -> exactly plain VQ.
-        # > 0 -> add L_ent = E[H(q)] - H(E[q]) to push usage toward uniform (anti-collapse).
-        self.entropy_weight = entropy_weight
-        self.entropy_temperature = entropy_temperature
-
-        # Single learnable codebook, standard VQGAN init.
+        self.entropy_weight = ibq_entropy_weight
+        self.tau = ibq_tau
+        self.l2_norm = ibq_l2_norm
+        self.reg_weight = ibq_reg_weight
+        self.entropy_temperature = ibq_entropy_temperature
         self.embed = nn.Embedding(codebook_size, token_dim)
-        self.embed.weight.data.uniform_(-1.0 / codebook_size, 1.0 / codebook_size)
+        nn.init.normal_(self.embed.weight, std=token_dim ** -0.5)
 
     def forward(self, z: torch.Tensor):
         """z: (B, C, h, w) -> (z_q, idxs (B,C), vq_loss, stats)."""
         B, C, h, w = z.shape
         D = h * w
         assert D == self.token_dim, f"token_dim mismatch: expected {self.token_dim}, got {D}."
-
         in_dtype = z.dtype
-        flat = z.reshape(B * C, D).float()
+        tok = z.reshape(B, C, D)
+        with _no_autocast(tok):
+            tok = tok.float()
+            cb = self.embed.weight.float()                       # (K, D)
+            tn = F.normalize(tok, dim=-1) if self.l2_norm else tok
+            cn = F.normalize(cb, dim=-1) if self.l2_norm else cb
+            raw_logits = torch.einsum("bcd,kd->bck", tn, cn)     # (B,C,K) unnormalized dot product
+            p = (raw_logits / self.tau).softmax(dim=-1)
+            idxs = p.argmax(dim=-1)                              # (B,C)
+            hard = F.one_hot(idxs, self.codebook_size).type_as(p)
+            Ind = hard + (p - p.detach())                        # STE: hard forward, soft grad
 
-        # Squared-L2 distance to every code (fp32, autocast-safe). Kept WITH grad so the
-        # optional entropy term below can backprop into both encoder and codebook; argmin
-        # itself is non-differentiable, so we detach for it.
-        with _no_autocast(flat):
-            cb = self.embed.weight
-            dist = flat.pow(2).sum(1, keepdim=True) - 2.0 * (flat @ cb.t()) + cb.pow(2).sum(1)
-            idxs = dist.detach().argmin(dim=1)
+            z_q_soft = torch.einsum("bck,kd->bcd", Ind, cb)      # decoder/recon grad path
+            z_q_hard = torch.einsum("bck,kd->bcd", hard, cb)     # hard quant (no grad to encoder)
 
-        quant = self.embed(idxs)                          # differentiable lookup -> codebook grad
+            # Double-quant loss in the OFFICIAL SEED-Voken IBQ ordering: the released code weights
+            # the COMMITMENT (encoder) term at 1.0 and the CODEBOOK term at beta -- the transpose of
+            # the paper's printed Eq.12. See module docstring.
+            term_soft   = F.mse_loss(z_q_soft, tok)              # ||z_q - z||^2 (index-backprop path)
+            term_commit = F.mse_loss(z_q_hard.detach(), tok)     # ||sg[z_q'] - z||^2 -> encoder (w=1)
+            term_code   = F.mse_loss(z_q_hard, tok.detach())     # ||z_q' - sg[z]||^2 -> codebook (w=beta)
+            l_q = term_soft + term_commit + self.commitment_beta * term_code
 
-        codebook_loss = F.mse_loss(quant, flat.detach())  # move codes toward features
-        commit = F.mse_loss(flat, quant.detach())         # move features toward codes
-        loss = codebook_loss + self.commitment_beta * commit
+            # Entropy penalty on a SEPARATELY sharpened softmax (IBQ entropy_temperature, MAGVIT-v2).
+            # At tau=1 the K-way softmax is ~uniform and the penalty is inert; the low temperature is
+            # what makes "confident per token, uniform across the book" actually exert force.
+            e_logits = raw_logits / self.entropy_temperature
+            e_logp = e_logits.log_softmax(dim=-1)                # log-space for stability
+            e_p = e_logp.exp()
+            ent_token = -(e_p * e_logp).sum(-1).mean()           # E[H(p)] (sample entropy)
+            e_bar = e_p.mean(dim=(0, 1))                         # marginal usage (K,)
+            ent_batch = -(e_bar * (e_bar + 1e-9).log()).sum()    # H(E[p]) (batch entropy)
+            l_e = ent_token - ent_batch
+            loss = self.reg_weight * l_q + self.entropy_weight * l_e
 
-        stats = self._stats(idxs.reshape(B, C))
-        stats["quant_error"] = commit.item()
-
-        # ---- optional entropy regularization (anti-collapse modification) ----
-        if self.entropy_weight > 0.0:
-            ent_loss, ent_logs = self._entropy_loss(dist)
-            loss = loss + self.entropy_weight * ent_loss
-            stats.update(ent_logs)
-
-        quant = flat + (quant - flat).detach()            # straight-through estimator
-        z_q = quant.reshape(B, C, h, w).to(in_dtype)
+        z_q = z_q_soft.reshape(B, C, h, w).to(in_dtype)
         idxs = idxs.reshape(B, C)
+        stats = self._stats(idxs)
+        stats["quant_error"] = term_commit.item()
+        stats["entropy_loss"] = l_e.item()
+        stats["entropy_per_sample"] = ent_token.item()
+        stats["entropy_marginal"] = ent_batch.item()
+        stats["avg_maxprob"] = p.max(-1).values.mean().item()
         return z_q, idxs, loss, stats
-
-    def _entropy_loss(self, dist: torch.Tensor):
-        """Entropy regularization on the soft code assignment (MAGVIT-v2 eq.).
-
-            q(z|x) = softmax(-dist / tau)                      # (B*C, N) over the codebook
-            L_ent  = E_x[H(q(z|x))]  -  H(E_x[q(z|x)])
-
-        Term 1 (per-token entropy, MINIMIZED) sharpens each assignment toward a single
-        code so quantization stays decisive. Term 2 (marginal entropy, MAXIMIZED via the
-        minus sign) flattens the *aggregate* usage histogram toward uniform -> every code
-        gets pulled into use. This is the VQ twin of the MoE load-balancing loss.
-        """
-        with _no_autocast(dist):
-            logits = -dist / self.entropy_temperature
-            log_q = F.log_softmax(logits, dim=1)
-            q = log_q.exp()
-            per_sample = -(q * log_q).sum(dim=1).mean()       # E[H(q)]
-            avg = q.mean(dim=0)                               # E[q] marginal usage
-            marginal = -(avg * (avg + 1e-12).log()).sum()     # H(E[q])
-            ent_loss = per_sample - marginal
-        logs = {
-            "entropy_loss": ent_loss.item(),
-            "entropy_per_sample": per_sample.item(),
-            "entropy_marginal": marginal.item(),
-        }
-        return ent_loss, logs
 
     @torch.no_grad()
     def _stats(self, idxs: torch.Tensor) -> dict:

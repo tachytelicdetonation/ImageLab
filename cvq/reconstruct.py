@@ -28,20 +28,15 @@ def build_from_ckpt(ckpt_path: str, device: str):
     cfg = ck["config"]
     m = cfg["model"]
     tok = CVQTokenizer(
-        encoder_type=m.get("encoder_type", "siglip"),
-        siglip_name=m["siglip_name"], siglip_layers=m["siglip_layers"],
-        freeze_encoder=m["freeze_encoder"], resolution=cfg["data"]["size"],
+        resolution=cfg["data"]["size"],
         latent_channels=m["latent_channels"],
         codebook_size=m["codebook_size"], commitment_beta=m["commitment_beta"],
-        entropy_weight=m.get("entropy_weight", 0.0),
-        entropy_temperature=m.get("entropy_temperature", 1.0),
-        quantizer_type=m.get("quantizer_type", "plain"),
         quantizer_kwargs=m.get("quantizer_kwargs", None),
         enc_ch=m.get("enc_ch", 128), enc_ch_mult=tuple(m.get("enc_ch_mult", [1, 1, 2, 2, 4])),
         decoder_ch=m["decoder_ch"], decoder_ch_mult=tuple(m["decoder_ch_mult"]),
         decoder_res_blocks=m["decoder_res_blocks"],
     ).to(device)
-    tok.load_state_dict(ck["tokenizer"], strict=False)  # encoder comes from HF
+    tok.load_state_dict(ck["tokenizer"], strict=False)
     tok.eval()
     return tok, cfg
 
