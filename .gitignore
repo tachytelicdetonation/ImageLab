@@ -12,5 +12,9 @@ __pycache__/
 *.pyc
 .uv/
 
+# Secrets / env
+.env
+.env.*
+
 # OS
 .DS_Store
