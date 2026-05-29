@@ -22,10 +22,18 @@ what the method *actually did* on our data.
 > autoencoder + VQ behavior (recon + LPIPS + codebook dynamics). That's exactly what we
 > want for diagnosing codebook collapse — the GAN is downstream of a healthy codebook.
 
+## ⚠️ Two different utilization metrics — don't confuse them
+- **`codebook/usage_batch`** (wandb line panel): codes used in **one batch** (16 imgs × 256 ch =
+  4096 tokens). **Ceiling = 4096/16384 = 25%** — it physically cannot exceed that at K=16384.
+- **`val/codebook_utilization_full`** (logged at val steps; `metrics.py:92`): unique codes over the
+  **entire dataset** (~332,800 tokens). This is the standard "codebook utilization" papers report,
+  and the one used to rank variants in the table below. A run can show usage_batch ~0.1 yet
+  full-utilization ~0.8 — both correct, different scope.
+
 ## What to watch (the collapse signature)
 | Metric (wandb key) | Healthy | Collapsing |
 |---|---|---|
-| `codebook/usage_batch` | rises toward 1.0 | falls toward ~0 (few codes win) |
+| `codebook/usage_batch` | rises (ceiling 25% at K=16384) | falls toward ~0 (few codes win) |
 | `codebook/perplexity` | high (≫ 1) | → 1 (one code dominates) |
 | `loss/vq` | small, stable | diverges upward |
 | `val/codebook_utilization_full` | high | tiny (e.g. <1%) |
@@ -106,8 +114,11 @@ All runs: 1000 steps, K=16384 (except Run 2), CNN encoder, GAN off (disc_start 2
   backprops to encoder + codebook; argmin detached. Memory: `(B·C, N)` softmax — fine at
   16k, scales linearly (MAGVIT-v2's caveat for huge codebooks).
 - **wandb keys added:** `codebook/entropy_loss`, `entropy_per_sample`, `entropy_marginal`.
-- **Result:** _tbd_
-- **Takeaway:** _tbd_
+- **Result:** ✅ util **56.6%** (PSNR 14.46, LPIPS 0.368, recon_L2 0.145) — huge jump from baseline's
+  0.15%, but the **weakest of the working methods**; `vq_loss` still rose (w=0.1 entropy pressure
+  alone didn't fully halt divergence).
+- **Takeaway:** a pure *loss* helps but is weaker than a *mechanism* — the softmax-over-all /
+  shared-codebook-function methods (IBQ, TransVQ) clearly dominate it.
 
 #### Research backing (2026 arXiv search, 2026-05-29)
 - **Entropy loss** — MAGVIT-v2 / "Language Model Beats Diffusion" ([arXiv:2310.05737](https://arxiv.org/html/2310.05737v2)); formula `E[H(q)] − H(E[q])`, "inspired by image VQGAN." ← what we implemented.
@@ -142,7 +153,8 @@ what the three structural methods target.
   a pretrained (CLIP/k-means) init — and CLIP/ImageNet init does **not** transfer to our
   *channel*-tokens (channels aren't a shared semantic space like spatial patches). So the
   random-frozen form is both faithful and the right call here. Config: `cvq_pokemon_cnn_simvq.yaml`.
-- **Cost:** +0.07M params. **Result:** _tbd_
+- **Cost:** +0.07M params. **Result:** ✅ util **83.5%**, PSNR 14.97, LPIPS 0.325, recon_L2 0.128.
+  Big win for ~70KB of extra params — the cheapest fix by far.
 
 ### Run 5 — TransVQ (`cvq-cnn-transvq-cb16384-1k`)
 - **Paper:** [arXiv:2602.18896](https://arxiv.org/abs/2602.18896) (Beyond Stationarity, Feb 2026).
@@ -152,7 +164,9 @@ what the three structural methods target.
 - **Mechanism (faithful):** frozen codebook `C` + `C' = P_φ(C)` where `P_φ` is a 1-layer
   **linear-attention** transformer over codes-as-tokens (linear attention so K=16384 is O(K),
   not O(K²)). Standard VQ runs against `C'`. depth 1, model_dim 256, 1 head, MLP ratio 2.
-- **Cost:** +1.7M params. Config: `cvq_pokemon_cnn_transvq.yaml`. **Result:** _tbd_
+- **Cost:** +1.7M params. Config: `cvq_pokemon_cnn_transvq.yaml`. **Result:** ⭐ **best utilization
+  (94.2%)** and excellent recon (PSNR 16.28, LPIPS 0.306, recon_L2 0.095). The transformer remap is
+  the most expressive shared codebook function — spreads usage *and* lifts fidelity together.
 
 ### Run 6 — FVQ / VQBridge (`cvq-cnn-fvq-cb16384-1k`)
 - **Paper:** [arXiv:2509.10140](https://arxiv.org/pdf/2509.10140) (Scalable, 100% utilization).
@@ -163,7 +177,10 @@ what the three structural methods target.
 - **Caveat:** the paper's `W_comp`/`W_exp` dims are internally inconsistent; we use the
   dimensionally-consistent group-flatten reading (compress `(K/p·D)→d'`). With p=16 this is
   **~140M params** (dwarfs the 29M encoder) — a real risk of overfitting on 1.3k images; the
-  behavior is itself a data point. Config: `cvq_pokemon_cnn_fvq.yaml`. **Result:** _tbd_
+  behavior is itself a data point. Config: `cvq_pokemon_cnn_fvq.yaml`. **Result:** ✅ but **weakest
+  of the structural methods**: util 47.9% (PSNR 15.52, LPIPS 0.335, recon_L2 0.114). The 140M bridge
+  on 1.3k images is over-parameterized (the flagged overfit risk) — likely needs more data or a
+  larger `p`/smaller bridge to shine; its strength is ImageNet-scale.
 
 ### Run 7 — Wasserstein matching (`cvq-cnn-wasserstein-cb16384-1k`)
 - **Paper:** [arXiv:2506.15078](https://arxiv.org/pdf/2506.15078) (Distributional Matching).
@@ -172,7 +189,9 @@ what the three structural methods target.
   via `eigh`), weight **γ=0.5**, **no stop-gradient** (flows to encoder + all codes). Not
   sliced-Wasserstein and not Sinkhorn — the paper uses the Gaussian/FID form.
 - **Caveat:** Gaussian assumption + 256-D covariance from B·C≈4k tokens; ε-ridge for stability.
-- **Cost:** +1.05M params (codebook). Config: `cvq_pokemon_cnn_wasserstein.yaml`. **Result:** _tbd_
+- **Cost:** +1.05M params (codebook). Config: `cvq_pokemon_cnn_wasserstein.yaml`. **Result:** ✅ util
+  **79.3%**, PSNR 14.86, LPIPS 0.361, recon_L2 0.132. Strong utilization (the global distribution
+  match revives codes well) but LPIPS lags the reparam methods — fidelity slightly behind.
 
 ### Run 8 — IBQ channel-wise — the EOSTok synthesis (`cvq-cnn-ibq-cb16384-1k`) ⭐ highest-potential bet
 - **Papers:** [EOSTok arXiv:2605.00503](https://arxiv.org/abs/2605.00503) (ICML 2026) + its quantizer
@@ -207,6 +226,23 @@ what the three structural methods target.
   softmax-over-all-codes is the strongest mechanism; ties TransVQ on quality, slightly lower util.
 
 ---
+
+## Phase-2 (CAR) toolbox — evaluated, parked until the autoregressive model exists
+Methods that are about *generation*, not the tokenizer — they don't move utilization now,
+but are directly applicable once the channel-wise CAR lands. Recorded so we don't re-litigate.
+- **APR loss** (EOSTok, [2605.00503](https://arxiv.org/abs/2605.00503)): decode the CAR's predicted
+  channel-tokens back to pixels; the antidote to NTP-induced codebook collapse during *joint*
+  tokenizer+CAR training (EOSTok Table 1: usage 51.8%→99.7%). **Top phase-2 candidate.**
+- **BAR / Masked Bit Modeling** (Amazon FAR, [2602.09024](https://arxiv.org/abs/2602.09024)):
+  replace the CAR's K-way softmax head (16384-way per channel-token — compute-heavy + hard to
+  learn on 1.3k imgs) with a masked-bit head predicting `log₂K=14` bits via a 3-layer
+  SwiGLU+adaLN MaskGIT-style model. Verdict: **NOT a tokenizer run** (its FSQ tokenizer abandons
+  channel-wise VQ); valuable only as a scalable generation head. Caveat: our learned-codebook
+  indices have no bit semantics, so the 14-bit decomposition is arbitrary (MBM models bit
+  dependencies jointly, so still works). Sampling: progressive bit-unmask, e.g. allocation
+  [5,5,4], guidance 3.0, temp 4.5→0.
+- **FSQ as a non-CVQ baseline** (optional): lookup-free, structurally collapse-free, but per-scalar
+  not per-channel-vector — would be a *different tokenizer*, not a CVQ variant.
 
 ## Backlog (candidate modifications, in rough order of principled-ness)
 Each is an explicit, documented deviation on top of the literal baseline. Pick based on
