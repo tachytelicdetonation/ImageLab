@@ -48,9 +48,13 @@ Only promising trajectories graduate to a full run.
 
 | # | Date | Change vs literal | Steps | Codebook | Final usage | Final ppl | rFID | Status |
 |---|------|-------------------|-------|----------|-------------|-----------|------|--------|
-| 1 | 2026-05-29 | none (100% literal baseline) | 1000 | 16384 | _tbd_ | _tbd_ | _tbd_ | 🟡 |
-| 2 | 2026-05-29 | codebook 16384→4096 | 1000 | 4096 | _tbd_ | _tbd_ | _tbd_ | 🟡 |
-| 3 | 2026-05-29 | + entropy loss (w=0.1, τ=1) | 1000 | 16384 | _tbd_ | _tbd_ | _tbd_ | 🟡 |
+| 1 | 2026-05-29 | none (100% literal baseline) | 1000 | 16384 | **0.15%** (~24) | ~23 | — | ❌ |
+| 2 | 2026-05-29 | codebook 16384→4096 | 1000 | 4096 | **0.93%** (~38) | ~30 | — | ❌ |
+| 3 | 2026-05-29 | + entropy loss (w=0.1, τ=1) | 1000 | 16384 | _tbd_ | _tbd_ | _tbd_ | 🔵 |
+| 4 | 2026-05-29 | SimVQ (frozen cb + linear) | 1000 | 16384 | _tbd_ | _tbd_ | _tbd_ | 🟡 |
+| 5 | 2026-05-29 | TransVQ (frozen cb + transformer) | 1000 | 16384 | _tbd_ | _tbd_ | _tbd_ | 🟡 |
+| 6 | 2026-05-29 | FVQ / VQBridge | 1000 | 16384 | _tbd_ | _tbd_ | _tbd_ | 🟡 |
+| 7 | 2026-05-29 | Wasserstein matching (γ=0.5) | 1000 | 16384 | _tbd_ | _tbd_ | _tbd_ | 🟡 |
 
 ---
 
@@ -59,21 +63,25 @@ Only promising trajectories graduate to a full run.
 - **Hypothesis:** the paper's "no bells and whistles" plain VQ collapses at our scale —
   16384 codes ≫ what ~1.3k images of 256 channels can populate. Establishes the
   reference everything else is measured against.
-- **wandb:** _link tbd_
-- **Result:** _tbd_
-- **Reconstructions:** _tbd_
-- **Takeaway:** _tbd_
+- **wandb:** [k3czdb5i](https://wandb.ai/tanmayd/cvq-pokemon/runs/k3czdb5i)
+- **Result:** ❌ **collapsed.** `vq_loss` 0.166 → **33.95** (diverged ~200×); `usage_batch`
+  0.140 → 0.002; perplexity ~23; `val/codebook_utilization_full` = **0.15%** (~24 of 16384).
+  Recon stayed low (recon_l2 0.158, psnr 14.09, ssim 0.687, lpips 0.367) — decoder + ~20
+  surviving codes memorize 1.3k images.
+- **Takeaway:** the paper's "no bells and whistles" plain VQ does **not** reproduce at our
+  scale; collapse within ~100 steps. Low recon masks a dead codebook — useless for a CAR
+  tokenizer. This is the reference all variants are measured against.
 
 ### Run 2 — Smaller codebook (`cvq-cnn-literal-cb4096-1k`)
 - **Config:** `configs/cvq_pokemon_cnn_cb4096.yaml`
-- **Hypothesis:** shrinking the codebook 4× sizes capacity closer to the data. If
-  collapse is fundamentally a "too many codes for too little data" problem, usage and
-  perplexity should hold up noticeably better than Run 1 — *without* any VQ trick, so
-  it stays a clean, paper-adjacent change.
-- **wandb:** _link tbd_
-- **Result:** _tbd_
-- **Reconstructions:** _tbd_
-- **Takeaway:** _tbd_
+- **Hypothesis:** shrinking the codebook 4× sizes capacity closer to the data.
+- **wandb:** [pi0m17bi](https://wandb.ai/tanmayd/cvq-pokemon/runs/pi0m17bi)
+- **Result:** ❌ **also collapsed.** `val/codebook_utilization_full` = **0.93%** (~38 of 4096)
+  — better fraction than Run 1 but still ~38 live codes; `vq_loss` still diverged to ~32.5,
+  perplexity ~30. recon/psnr/ssim essentially identical to Run 1.
+- **Takeaway:** **collapse is NOT merely a capacity problem.** A 4× smaller codebook gives only
+  marginally more live codes and does not stop `vq_loss` divergence. The fix must change the
+  codebook *dynamics* (→ the structural variants below), not just its size.
 
 ### Run 3 — Entropy loss (`cvq-cnn-entropy0.1-cb16384-1k`)
 - **Config:** `configs/cvq_pokemon_cnn_entropy.yaml` (`entropy_weight=0.1`, `entropy_temperature=1.0`)
@@ -99,6 +107,63 @@ Only promising trajectories graduate to a full run.
 - **Distributional/Wasserstein matching** ([arXiv:2506.15078](https://arxiv.org/pdf/2506.15078), 2025) — align feature & code distributions.
 - **VQGAN-LC / one linear layer** ([arXiv:2411.02038](https://arxiv.org/html/2411.02038v1)) — frozen pretrained codebook + projection, ~99% at 100k codes.
 - **LLM analogue** — MoE load-balancing aux loss (Switch Transformer): `N·Σ fᵢ·Pᵢ`, same objective as entropy term 2.
+
+---
+
+## Paper-variant experiments (Runs 4–7)
+Four published collapse fixes, faithfully adapted to our channel-token setting, each over
+the **16k baseline with no entropy loss** so each paper's mechanism is isolated. Implemented
+in `cvq/models/vq_variants.py`, selected via `model.quantizer_type`. The literal
+`ChannelwiseVQ` in `quantizer.py` is left untouched.
+
+**Structural insight:** SimVQ / TransVQ / FVQ all share one idea — *the codebook you quantize
+against is a function of a base codebook, so a gradient on one selected code flows through
+shared weights into all codes, so dead codes can't form.* They differ only in the function:
+linear (SimVQ), transformer (TransVQ), bridge-net (FVQ). Wasserstein is the odd one out: a
+pure loss added to plain VQ. Run 2 showed collapse is a *dynamics* problem, which is exactly
+what the three structural methods target.
+
+### Run 4 — SimVQ (`cvq-cnn-simvq-cb16384-1k`)
+- **Paper:** [arXiv:2411.02038](https://arxiv.org/html/2411.02038v1) ("…with One Linear Layer").
+  **Note:** this ID is **SimVQ**, *not* VQGAN-LC (that's [2406.11837](https://arxiv.org/html/2406.11837v1)).
+- **Mechanism (faithful):** frozen **random** codebook `C` (buffer) + one trainable linear
+  layer `W` (256×256, no bias, **identity-init** so step 0 = plain frozen-codebook VQ).
+  Quantize against `C·W`; the standard codebook-loss term trains `W` (not `C`).
+- **Why this adaptation:** SimVQ's own ablation shows a frozen *random* codebook + `W` matches
+  a pretrained (CLIP/k-means) init — and CLIP/ImageNet init does **not** transfer to our
+  *channel*-tokens (channels aren't a shared semantic space like spatial patches). So the
+  random-frozen form is both faithful and the right call here. Config: `cvq_pokemon_cnn_simvq.yaml`.
+- **Cost:** +0.07M params. **Result:** _tbd_
+
+### Run 5 — TransVQ (`cvq-cnn-transvq-cb16384-1k`)
+- **Paper:** [arXiv:2602.18896](https://arxiv.org/abs/2602.18896) (Beyond Stationarity, Feb 2026).
+  This paper proposes two methods (NSVQ + TransVQ); we implement **TransVQ** as the faithful
+  representative (NSVQ's published equations are inconsistent with its released code, per the
+  authors' repo; TransVQ is the cleaner, self-contained method — flagged for a possible later run).
+- **Mechanism (faithful):** frozen codebook `C` + `C' = P_φ(C)` where `P_φ` is a 1-layer
+  **linear-attention** transformer over codes-as-tokens (linear attention so K=16384 is O(K),
+  not O(K²)). Standard VQ runs against `C'`. depth 1, model_dim 256, 1 head, MLP ratio 2.
+- **Cost:** +1.7M params. Config: `cvq_pokemon_cnn_transvq.yaml`. **Result:** _tbd_
+
+### Run 6 — FVQ / VQBridge (`cvq-cnn-fvq-cb16384-1k`)
+- **Paper:** [arXiv:2509.10140](https://arxiv.org/pdf/2509.10140) (Scalable, 100% utilization).
+- **Mechanism (faithful):** **trainable** codebook `C` remapped by **VQBridge** =
+  compress(group-flatten) → 2 ViT blocks → recover, producing `Ĉ`. Quantize against `Ĉ`;
+  recomputed every step. groups `p=16` (the paper's value for K=16384). No dead-code resets —
+  utilization is meant to be structural. At inference `Ĉ` is baked and the bridge dropped.
+- **Caveat:** the paper's `W_comp`/`W_exp` dims are internally inconsistent; we use the
+  dimensionally-consistent group-flatten reading (compress `(K/p·D)→d'`). With p=16 this is
+  **~140M params** (dwarfs the 29M encoder) — a real risk of overfitting on 1.3k images; the
+  behavior is itself a data point. Config: `cvq_pokemon_cnn_fvq.yaml`. **Result:** _tbd_
+
+### Run 7 — Wasserstein matching (`cvq-cnn-wasserstein-cb16384-1k`)
+- **Paper:** [arXiv:2506.15078](https://arxiv.org/pdf/2506.15078) (Distributional Matching).
+- **Mechanism (faithful):** plain channel-wise VQ + a **Bures-Wasserstein** term (closed-form
+  W₂ between Gaussian fits of the encoder feature tokens and the codebook vectors; matrix sqrt
+  via `eigh`), weight **γ=0.5**, **no stop-gradient** (flows to encoder + all codes). Not
+  sliced-Wasserstein and not Sinkhorn — the paper uses the Gaussian/FID form.
+- **Caveat:** Gaussian assumption + 256-D covariance from B·C≈4k tokens; ε-ridge for stability.
+- **Cost:** +1.05M params (codebook). Config: `cvq_pokemon_cnn_wasserstein.yaml`. **Result:** _tbd_
 
 ---
 

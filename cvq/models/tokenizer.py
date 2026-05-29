@@ -28,8 +28,8 @@ from torch.nn import functional as F
 
 from .decoder import Decoder, Normalize, ResnetBlock, nonlinearity
 from .encoder_cnn import Encoder as CNNEncoder
-from .quantizer import ChannelwiseVQ
 from .siglip_encoder import SiglipEncoder
+from .vq_variants import build_quantizer
 
 
 class ChannelAdapter(nn.Module):
@@ -64,6 +64,8 @@ class CVQTokenizer(nn.Module):
         commitment_beta: float = 0.25,
         entropy_weight: float = 0.0,
         entropy_temperature: float = 1.0,
+        quantizer_type: str = "plain",
+        quantizer_kwargs: dict | None = None,
         enc_ch: int = 128,
         enc_ch_mult=(1, 1, 2, 2, 4),
         decoder_ch: int = 128,
@@ -88,12 +90,14 @@ class CVQTokenizer(nn.Module):
             image_size = self.encoder.image_size
         token_dim = g * g
 
-        self.quantizer = ChannelwiseVQ(
+        self.quantizer = build_quantizer(
+            quantizer_type,
             codebook_size=codebook_size,
             token_dim=token_dim,
             commitment_beta=commitment_beta,
             entropy_weight=entropy_weight,
             entropy_temperature=entropy_temperature,
+            **(quantizer_kwargs or {}),
         )
         self.decoder = Decoder(
             ch=decoder_ch,

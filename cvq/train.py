@@ -102,6 +102,8 @@ def main():
         codebook_size=mcfg["codebook_size"], commitment_beta=mcfg["commitment_beta"],
         entropy_weight=mcfg.get("entropy_weight", 0.0),
         entropy_temperature=mcfg.get("entropy_temperature", 1.0),
+        quantizer_type=mcfg.get("quantizer_type", "plain"),
+        quantizer_kwargs=mcfg.get("quantizer_kwargs", None),
         enc_ch=mcfg.get("enc_ch", 128), enc_ch_mult=tuple(mcfg.get("enc_ch_mult", [1, 1, 2, 2, 4])),
         decoder_ch=mcfg["decoder_ch"], decoder_ch_mult=tuple(mcfg["decoder_ch_mult"]),
         decoder_res_blocks=mcfg["decoder_res_blocks"],
@@ -255,6 +257,8 @@ def main():
                         "codebook/entropy_per_sample": out["stats"]["entropy_per_sample"],
                         "codebook/entropy_marginal": out["stats"]["entropy_marginal"],
                     })
+                if "wasserstein" in out["stats"]:
+                    scalars["codebook/wasserstein"] = out["stats"]["wasserstein"]
                 scalars.update({
                     "opt/lr_g": sched_g.get_last_lr()[0],
                     "opt/lr_d": sched_d.get_last_lr()[0],
