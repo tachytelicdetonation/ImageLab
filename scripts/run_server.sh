@@ -7,6 +7,12 @@ CONFIG="${1:-configs/cvq_pokemon_cuda.yaml}"
 PY="./.venv/bin/python"
 [ -x "$PY" ] || PY="python3"
 
+# Load secrets (e.g. WANDB_API_KEY) from a gitignored .env if present.
+if [ -f .env ]; then
+  set -a; . ./.env; set +a
+  echo "==> loaded .env ($([ -n "${WANDB_API_KEY:-}" ] && echo 'WANDB_API_KEY set' || echo 'no WANDB_API_KEY'))"
+fi
+
 # 1) Build the dataset (idempotent + cached; safe to re-run).
 if [ ! -f data/manifest.jsonl ]; then
   echo "==> downloading Pokemon dataset (all variants, official artwork)"
