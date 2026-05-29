@@ -367,6 +367,89 @@ class WassersteinVQ(ChannelwiseVQ):
 
 
 # --------------------------------------------------------------------------- #
+# IBQ — Index Backpropagation Quantization, channel-wise (EOSTok, arXiv:2605.00503;
+# quantizer from IBQ, arXiv:2412.02692). The EOSTok x CVQ synthesis.
+# --------------------------------------------------------------------------- #
+class IBQChannelVQ(_VariantBase):
+    """Channel-wise IBQ. Instead of plain VQ's argmin-NN + single-code STE, IBQ takes a
+    SOFTMAX over ALL K codes (cosine-normalized logits) and straight-throughs the full
+    categorical distribution -> every code gets gradient every step (the anti-collapse
+    mechanism that reaches ~100% utilization). Applied per CHANNEL-token (dim D=h*w),
+    quantized against a shared codebook (K, D) -- K=16384, D=256 is IBQ's native default.
+
+        logits = cos(z, C) / tau                       # (B,C,K), l2-normalized
+        p      = softmax(logits)
+        Ind    = onehot(argmax p) + (p - sg[p])        # hard forward, soft gradient (STE)
+        z_q    = Ind @ C                               # index-backprop: grad -> encoder + ALL codes
+        L_Q    = ||z_q - z||^2 + ||sg[z] - z_q_hard||^2 + beta||z - sg[z_q_hard]||^2   (IBQ Eq.12)
+        L_E    = E[H(p)] - H(E[p])                     # entropy penalty (spread usage)
+
+    NOTE: this REPLACES the plain-VQ baseline where they conflict (per the EOSTok synthesis
+    directive). APR + NTP losses are deferred to phase 2 (they need the CAR). reg_weight
+    scales L_Q (EOSTok folds it under lambda_reg=1e-3 inside a different multi-loss
+    normalization; here vq_loss is already scaled by codebook_weight=1.0 in CVQLoss, so we
+    keep L_Q at full weight to match how plain VQ is treated)."""
+
+    def __init__(self, codebook_size: int = 16384, token_dim: int = 256,
+                 commitment_beta: float = 0.25,
+                 ibq_entropy_weight: float = 0.05, ibq_tau: float = 1.0,
+                 ibq_l2_norm: bool = True, ibq_reg_weight: float = 1.0, **_ignore):
+        super().__init__()
+        self.codebook_size = codebook_size
+        self.token_dim = token_dim
+        self.commitment_beta = commitment_beta
+        self.entropy_weight = ibq_entropy_weight
+        self.tau = ibq_tau
+        self.l2_norm = ibq_l2_norm
+        self.reg_weight = ibq_reg_weight
+        self.embed = nn.Embedding(codebook_size, token_dim)
+        nn.init.normal_(self.embed.weight, std=token_dim ** -0.5)
+
+    def _effective_codebook(self) -> torch.Tensor:
+        return self.embed.weight
+
+    def forward(self, z: torch.Tensor):
+        B, C, h, w = z.shape
+        D = h * w
+        in_dtype = z.dtype
+        tok = z.reshape(B, C, D)
+        with _no_autocast(tok):
+            tok = tok.float()
+            cb = self.embed.weight.float()                       # (K, D)
+            tn = F.normalize(tok, dim=-1) if self.l2_norm else tok
+            cn = F.normalize(cb, dim=-1) if self.l2_norm else cb
+            logits = torch.einsum("bcd,kd->bck", tn, cn) / self.tau   # (B,C,K)
+            p = logits.softmax(dim=-1)
+            idxs = p.argmax(dim=-1)                              # (B,C)
+            hard = F.one_hot(idxs, self.codebook_size).type_as(p)
+            Ind = hard + (p - p.detach())                        # STE: hard forward, soft grad
+
+            z_q_soft = torch.einsum("bck,kd->bcd", Ind, cb)      # decoder/recon grad path
+            z_q_hard = torch.einsum("bck,kd->bcd", hard, cb)     # used inside L_Q
+
+            term1 = F.mse_loss(z_q_soft, tok)                    # soft consistency (z & C)
+            term2 = F.mse_loss(z_q_hard, tok.detach())           # codebook update
+            term3 = F.mse_loss(tok, z_q_hard.detach())           # commitment (encoder)
+            l_q = term1 + term2 + self.commitment_beta * term3
+
+            ent_token = -(p * (p + 1e-9).log()).sum(-1).mean()   # E[H(p)]
+            p_bar = p.mean(dim=(0, 1))                            # marginal usage (K,)
+            ent_batch = -(p_bar * (p_bar + 1e-9).log()).sum()    # H(E[p])
+            l_e = ent_token - ent_batch
+            loss = self.reg_weight * l_q + self.entropy_weight * l_e
+
+        z_q = z_q_soft.reshape(B, C, h, w).to(in_dtype)
+        idxs = idxs.reshape(B, C)
+        stats = _usage_perplexity(idxs, self.codebook_size)
+        stats["quant_error"] = term3.item()
+        stats["entropy_loss"] = l_e.item()
+        stats["entropy_per_sample"] = ent_token.item()
+        stats["entropy_marginal"] = ent_batch.item()
+        stats["avg_maxprob"] = p.max(-1).values.mean().item()
+        return z_q, idxs, loss, stats
+
+
+# --------------------------------------------------------------------------- #
 # Factory
 # --------------------------------------------------------------------------- #
 _REGISTRY = {
@@ -374,6 +457,7 @@ _REGISTRY = {
     "transvq": TransVQ,
     "fvq": FVQ,
     "wasserstein": WassersteinVQ,
+    "ibq": IBQChannelVQ,
 }
 
 

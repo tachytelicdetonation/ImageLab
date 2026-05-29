@@ -39,6 +39,9 @@ plus the prior works it credits.
 | **pix2pix (PatchGAN)** | Isola et al., CVPR 2017 | `NLayerDiscriminator`. → `cvq/models/discriminator.py` |
 | **LPIPS** | [arXiv:1801.03924](https://arxiv.org/abs/1801.03924) (Zhang et al., 2018) | Perceptual reconstruction loss (`lpips`, VGG). |
 | **SigLIP** | [arXiv:2303.15343](https://arxiv.org/abs/2303.15343) (Zhai et al., 2023) | ViT image encoder for the repo's *convenience* "ViT version" only — **not** the paper. Available via `encoder_type=siglip`. |
+| **EOSTok** | [arXiv:2605.00503](https://arxiv.org/abs/2605.00503) (ICML 2026) | End-to-end AR + 1D tokenizer. We take its **IBQ quantizer** applied channel-wise (`quantizer_type=ibq`); its **APR loss** is the top phase-2 (CAR) candidate. 1D-ViT / drop-2D-prior **not** used (spatial-AR specific). |
+| **IBQ** | [arXiv:2412.02692](https://arxiv.org/abs/2412.02692) (Index Backprop Quant.) | Softmax-over-all-codes + straight-through + cosine-ℓ2 logits + entropy + double-quant loss → ~100% utilization. Channel-wise adaptation in `cvq/models/vq_variants.py:IBQChannelVQ`. |
+| **Anti-collapse VQ variants** | [SimVQ 2411.02038](https://arxiv.org/abs/2411.02038), [Beyond-Stationarity/TransVQ 2602.18896](https://arxiv.org/abs/2602.18896), [FVQ/VQBridge 2509.10140](https://arxiv.org/abs/2509.10140), [Wasserstein 2506.15078](https://arxiv.org/abs/2506.15078) | Codebook-collapse fixes, each adapted channel-wise as experimental `quantizer_type`s (Runs 4–7 in RESULTS.md). |
 
 ---
 
