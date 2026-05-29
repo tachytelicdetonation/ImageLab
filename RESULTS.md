@@ -244,6 +244,17 @@ but are directly applicable once the channel-wise CAR lands. Recorded so we don'
 - **FSQ as a non-CVQ baseline** (optional): lookup-free, structurally collapse-free, but per-scalar
   not per-channel-vector — would be a *different tokenizer*, not a CVQ variant.
 
+## Evaluated and DEPRIORITIZED (don't re-litigate)
+- **LeJEPA / SIGReg** ([2511.08544](https://arxiv.org/abs/2511.08544), Balestriero & LeCun, Nov 2025):
+  an SSL method, NOT a tokenizer. Transferable nugget = SIGReg: regularize encoder embeddings to an
+  isotropic Gaussian via random 1D projections + Epps-Pulley characteristic-function test (cheap,
+  O(N), no matrix-sqrt; gradient to encoder). It's an *encoder-side* anti-collapse lever — a cheaper
+  cousin of our Wasserstein variant (Run 7), which matched features→codes. **Deprioritized because:**
+  (a) feature-side matching already *lost* to codebook-side mechanisms here (Wasserstein 79% util <
+  IBQ/TransVQ 81–94%); (b) its isotropic-Gaussian target is optimal for linear-probing, and may
+  *fight reconstruction* (we have a decoder; SSL doesn't). Only worth it as a tiny-λ auxiliary
+  regularizer alongside a codebook-side winner if utilization ever stalls — never standalone.
+
 ## Backlog (candidate modifications, in rough order of principled-ness)
 Each is an explicit, documented deviation on top of the literal baseline. Pick based on
 what the screening runs above reveal.
