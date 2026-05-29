@@ -36,8 +36,8 @@ loss:
 train:
   device: cuda
   amp: bf16
-  batch_size: 32
-  grad_accum: 1
+  batch_size: 16             # CNN encoder backprop is memory-heavy (vs frozen SigLIP)
+  grad_accum: 2              # effective batch 32
   epochs: 100
   lr: 1.0e-4                 # paper
   encoder_lr: 1.0e-4         # cnn trains at base lr (single group)
