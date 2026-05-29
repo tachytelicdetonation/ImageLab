@@ -26,7 +26,7 @@ loss:
                               # README's sem_weight=1 is the repo's SigLIP unified
                               # variant; it caused a face-prototype artifact here.
   codebook_weight: 1.0
-  disc_weight: 0.8
+  disc_weight: 1.0            # lambda_0 = 1 (paper's base GAN weight)
   disc_loss: hinge
   lpips_net: vgg
   gan_eta: 0.05

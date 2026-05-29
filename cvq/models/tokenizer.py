@@ -122,8 +122,15 @@ class CVQTokenizer(nn.Module):
         }
 
     def trainable_parameters(self):
-        """Params optimized by the generator optimizer (excludes frozen encoder & EMA codebook)."""
-        params = list(self.adapter.parameters()) + list(self.decoder.parameters())
+        """Params optimized by the generator optimizer.
+
+        Now includes the quantizer: the codebook is a plain gradient-updated
+        embedding (paper's no-EMA VQ), so it must be in the optimizer. Excludes the
+        frozen SigLIP encoder.
+        """
+        params = (list(self.adapter.parameters())
+                  + list(self.quantizer.parameters())
+                  + list(self.decoder.parameters()))
         if not self.encoder.frozen:
             params += [p for p in self.encoder.parameters() if p.requires_grad]
         return params
