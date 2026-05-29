@@ -157,11 +157,13 @@ def main():
         if use_wandb:
             wandb.log({f"images/{k}": wandb.Image(v) for k, v in imgs.items()}, step=s)
 
-    def log_ckpt_artifact(path, s):
+    def log_ckpt_artifact(path, s, aliases):
+        # Upload only on new-best (mid-run crash protection) and final ("latest").
+        # We do NOT back up every checkpoint — just the best & latest tokenizer.
         if use_wandb and wcfg.get("log_checkpoints", True):
             art = wandb.Artifact("cvq-tokenizer", type="model", metadata={"step": s})
             art.add_file(str(path))
-            wandb.log_artifact(art, aliases=[f"step{s}", "latest"])
+            wandb.log_artifact(art, aliases=aliases)
 
     start_step, start_epoch = 0, 0
     if args.resume and Path(args.resume).exists():
@@ -176,6 +178,7 @@ def main():
     accum = tcfg["grad_accum"]
     fixed_batch = next(iter(dl))["image"][:8].to(device)  # for sample grids
     step = start_step
+    best_score = float("inf")  # lower is better (rFID, else recon_l2_full)
     t0 = time.time()
 
     for epoch in range(start_epoch, tcfg["epochs"]):
@@ -273,11 +276,18 @@ def main():
                 wlog(metrics, step); wlog_images(images, step)
                 print("  val:", {k: round(v, 4) for k, v in metrics.items()
                                   if isinstance(v, float)})
+                # Track best by rFID (fallback recon_l2_full); back up only the best.
+                score = metrics.get("val/rFID", metrics.get("val/recon_l2_full", float("inf")))
+                if score < best_score:
+                    best_score = score
+                    torch.save({"tokenizer": _tok_state_no_encoder(tok), "config": cfg,
+                                "step": step, "score": score}, ckpt_dir / "best.pt")
+                    log_ckpt_artifact(ckpt_dir / "best.pt", step, aliases=["best"])
+                    print(f"  new best ({score:.4f}) -> best.pt")
 
-            # ---- checkpoint (F: durable artifact) ----
+            # ---- checkpoint (local only; resumable, keep_last) ----
             if step > 0 and step % tcfg["ckpt_every"] == 0:
                 save_ckpt(ckpt_dir, tok, disc, opt_g, opt_d, step, epoch, cfg, ocfg["keep_last"])
-                log_ckpt_artifact(ckpt_dir / "latest.pt", step)
 
             step += 1
             if args.max_steps and step >= args.max_steps:
@@ -286,12 +296,14 @@ def main():
             break
 
     save_ckpt(ckpt_dir, tok, disc, opt_g, opt_d, step, epoch, cfg, ocfg["keep_last"])
-    # final validation + durable checkpoint artifact
+    # final validation + durable checkpoint artifact (latest, and best if it's the best)
     metrics, images = validate(tok, ds, device, batch_size=tcfg["batch_size"],
                                compute_fid=tcfg.get("val_fid", True), lpips_fn=crit.perceptual)
     wlog(metrics, step); wlog_images(images, step)
     print("final val:", {k: round(v, 4) for k, v in metrics.items() if isinstance(v, float)})
-    log_ckpt_artifact(ckpt_dir / "latest.pt", step)
+    final_score = metrics.get("val/rFID", metrics.get("val/recon_l2_full", float("inf")))
+    aliases = ["latest", "best"] if final_score <= best_score else ["latest"]
+    log_ckpt_artifact(ckpt_dir / "latest.pt", step, aliases=aliases)
     writer.close()
     if use_wandb:
         wandb.finish()
