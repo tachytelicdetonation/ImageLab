@@ -38,9 +38,22 @@ plus the prior works it credits.
 | **VQGAN / taming-transformers** | [arXiv:2012.09841](https://arxiv.org/abs/2012.09841) (Esser et al., 2021) | Convolutional decoder (ResNet + attention + nearest-up); PatchGAN adversarial training; last-layer adaptive GAN weight. → `cvq/models/decoder.py` |
 | **pix2pix (PatchGAN)** | Isola et al., CVPR 2017 | `NLayerDiscriminator`. → `cvq/models/discriminator.py` |
 | **LPIPS** | [arXiv:1801.03924](https://arxiv.org/abs/1801.03924) (Zhang et al., 2018) | Perceptual reconstruction loss (`lpips`, VGG). |
-| **SigLIP** | [arXiv:2303.15343](https://arxiv.org/abs/2303.15343) (Zhai et al., 2023) | Frozen ViT image encoder (`google/siglip-base-patch16-256`). → `cvq/models/siglip_encoder.py` |
+| **SigLIP** | [arXiv:2303.15343](https://arxiv.org/abs/2303.15343) (Zhai et al., 2023) | ViT image encoder for the repo's *convenience* "ViT version" only — **not** the paper. Available via `encoder_type=siglip`. |
 
 ---
+
+## Encoder: what the paper actually uses
+- The **paper never mentions SigLIP**. It states the tokenizer follows "**the standard
+  VQGAN approach**" and inherits the VQGAN encoder — i.e. a **convolutional encoder
+  trained from scratch** (downsample ratio f, strided convs). This is `encoder_type=cnn`
+  (`cvq/models/encoder_cnn.py`), the default for the faithful run.
+- The **SigLIP ViT** path is only the repo's released "*a ViT version … for convenience*"
+  variant, kept as an option (`encoder_type=siglip`) but not the paper's method.
+- **Codebook:** the paper claims plain VQ suffices ("no bells and whistles"), but plain
+  VQ **collapsed at our 1.3k-image scale** with both encoders (usage→0.1%, loss diverged).
+  We therefore use **EMA + dead-code restart** (what the repo's shipped VILA-U code uses);
+  toggle via `codebook_ema`. This is the one place we follow the released code over the
+  paper's prose, justified empirically.
 
 ## Notes on faithfulness
 - Where the paper is explicit, we match it (channel-wise quant, plain VQ, ℓ2, nested
