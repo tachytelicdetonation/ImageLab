@@ -100,6 +100,8 @@ def main():
         freeze_encoder=mcfg["freeze_encoder"], resolution=cfg["data"]["size"],
         latent_channels=mcfg["latent_channels"],
         codebook_size=mcfg["codebook_size"], commitment_beta=mcfg["commitment_beta"],
+        entropy_weight=mcfg.get("entropy_weight", 0.0),
+        entropy_temperature=mcfg.get("entropy_temperature", 1.0),
         enc_ch=mcfg.get("enc_ch", 128), enc_ch_mult=tuple(mcfg.get("enc_ch_mult", [1, 1, 2, 2, 4])),
         decoder_ch=mcfg["decoder_ch"], decoder_ch_mult=tuple(mcfg["decoder_ch_mult"]),
         decoder_res_blocks=mcfg["decoder_res_blocks"],
@@ -234,9 +236,11 @@ def main():
             if step % tcfg["log_every"] == 0:
                 ips = (step - start_step + 1) * tcfg["batch_size"] / (time.time() - t0)
                 ck_str = "full" if c_keep is None else str(c_keep)
+                ent_str = (f"ent {out['stats']['entropy_loss']:.3f} "
+                           if "entropy_loss" in out["stats"] else "")
                 print(f"e{epoch} s{step} | tot {g_logs['loss/total']:.3f} "
                       f"rec {g_logs['loss/recon']:.3f} lpips {g_logs['loss/lpips']:.3f} "
-                      f"vq {g_logs['loss/vq']:.4f} d {d_logs['loss/disc']:.3f} | "
+                      f"vq {g_logs['loss/vq']:.4f} {ent_str}d {d_logs['loss/disc']:.3f} | "
                       f"use {out['stats']['usage']:.3f} ppl {out['stats']['perplexity']:.0f} "
                       f"c_keep {ck_str} | {ips:.1f} img/s")
                 scalars = {**g_logs, **d_logs}
@@ -244,6 +248,14 @@ def main():
                     "codebook/usage_batch": out["stats"]["usage"],
                     "codebook/perplexity": out["stats"]["perplexity"],
                     "codebook/quant_error": out["stats"]["quant_error"],
+                })
+                if "entropy_loss" in out["stats"]:
+                    scalars.update({
+                        "codebook/entropy_loss": out["stats"]["entropy_loss"],
+                        "codebook/entropy_per_sample": out["stats"]["entropy_per_sample"],
+                        "codebook/entropy_marginal": out["stats"]["entropy_marginal"],
+                    })
+                scalars.update({
                     "opt/lr_g": sched_g.get_last_lr()[0],
                     "opt/lr_d": sched_d.get_last_lr()[0],
                     "opt/grad_norm_g": gn_g,

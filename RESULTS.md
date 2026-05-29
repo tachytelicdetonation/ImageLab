@@ -50,6 +50,7 @@ Only promising trajectories graduate to a full run.
 |---|------|-------------------|-------|----------|-------------|-----------|------|--------|
 | 1 | 2026-05-29 | none (100% literal baseline) | 1000 | 16384 | _tbd_ | _tbd_ | _tbd_ | 🟡 |
 | 2 | 2026-05-29 | codebook 16384→4096 | 1000 | 4096 | _tbd_ | _tbd_ | _tbd_ | 🟡 |
+| 3 | 2026-05-29 | + entropy loss (w=0.1, τ=1) | 1000 | 16384 | _tbd_ | _tbd_ | _tbd_ | 🟡 |
 
 ---
 
@@ -74,11 +75,37 @@ Only promising trajectories graduate to a full run.
 - **Reconstructions:** _tbd_
 - **Takeaway:** _tbd_
 
+### Run 3 — Entropy loss (`cvq-cnn-entropy0.1-cb16384-1k`)
+- **Config:** `configs/cvq_pokemon_cnn_entropy.yaml` (`entropy_weight=0.1`, `entropy_temperature=1.0`)
+- **Hypothesis:** an explicit usage-pressure loss can fix collapse without EMA/restart. Adds
+  the MAGVIT-v2 / VQGAN entropy regularizer on the soft assignment
+  `q = softmax(-dist/τ)`:  `L_ent = E[H(q)] − H(E[q])`. Term 1 (min) keeps assignments
+  sharp; term 2 (max marginal entropy) flattens aggregate usage → all codes pulled in.
+- **Why this loss:** it is the **VQ analogue of the LLM MoE load-balancing loss**
+  (Switch Transformer: `N·Σ fᵢ·Pᵢ`) — codebook collapse and MoE routing collapse are the
+  same winner-take-all failure. Cheapest principled fix; no architecture change.
+- **Implementation:** `cvq/models/quantizer.ChannelwiseVQ._entropy_loss`. Gated by
+  `entropy_weight` (0.0 ⇒ exactly the literal baseline). Soft `dist` kept with-grad so it
+  backprops to encoder + codebook; argmin detached. Memory: `(B·C, N)` softmax — fine at
+  16k, scales linearly (MAGVIT-v2's caveat for huge codebooks).
+- **wandb keys added:** `codebook/entropy_loss`, `entropy_per_sample`, `entropy_marginal`.
+- **Result:** _tbd_
+- **Takeaway:** _tbd_
+
+#### Research backing (2026 arXiv search, 2026-05-29)
+- **Entropy loss** — MAGVIT-v2 / "Language Model Beats Diffusion" ([arXiv:2310.05737](https://arxiv.org/html/2310.05737v2)); formula `E[H(q)] − H(E[q])`, "inspired by image VQGAN." ← what we implemented.
+- **Beyond Stationarity** ([arXiv:2602.18896](https://arxiv.org/abs/2602.18896), Feb 2026) — root cause = encoder drift stranding unselected codes; fixes are *architectural* (NSVQ kernel rule, TransVQ codebook transform), near-100% utilization. Candidate if a loss alone underperforms.
+- **Scalable Training, 100% Codebook Utilization** ([arXiv:2509.10140](https://arxiv.org/pdf/2509.10140), 2025).
+- **Distributional/Wasserstein matching** ([arXiv:2506.15078](https://arxiv.org/pdf/2506.15078), 2025) — align feature & code distributions.
+- **VQGAN-LC / one linear layer** ([arXiv:2411.02038](https://arxiv.org/html/2411.02038v1)) — frozen pretrained codebook + projection, ~99% at 100k codes.
+- **LLM analogue** — MoE load-balancing aux loss (Switch Transformer): `N·Σ fᵢ·Pᵢ`, same objective as entropy term 2.
+
 ---
 
 ## Backlog (candidate modifications, in rough order of principled-ness)
 Each is an explicit, documented deviation on top of the literal baseline. Pick based on
 what the screening runs above reveal.
+0. **Entropy / load-balancing loss** — ✅ implemented, queued as Run 3 above.
 1. **Codebook init** — data-dependent / unit-scale init (attacks cold-start; barely a trick).
 2. **More data** — game sprites + augmentation, codebook sized to data (attacks root cause).
 3. **Cosine codebook** (ViT-VQGAN L2-norm) — proven high utilization, no EMA.

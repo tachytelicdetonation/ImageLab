@@ -1,0 +1,75 @@
+# CVQ tokenizer — literal baseline + ENTROPY LOSS (anti-collapse MODIFICATION).
+# Same CNN-from-scratch + plain channel-wise VQ as cvq_pokemon_cnn.yaml, but adds the
+# MAGVIT-v2 / VQGAN entropy regularizer on the soft code assignment:
+#     L_ent = E[H(q)] - H(E[q]),   q = softmax(-dist / tau)
+# This is the VQ analogue of the MoE load-balancing loss — it pushes aggregate codeword
+# usage toward uniform to fight the collapse the literal baseline exhibits. Everything
+# else is identical to the literal run for an apples-to-apples diff. (arXiv:2310.05737)
+
+data:
+  root: data
+  size: 256
+  hflip: true
+
+model:
+  encoder_type: cnn
+  freeze_encoder: false
+  siglip_name: google/siglip-base-patch16-256   # unused for cnn
+  siglip_layers: null
+  resolution: 256
+  latent_channels: 256
+  codebook_size: 16384       # same as literal baseline
+  commitment_beta: 0.25
+  entropy_weight: 0.1        # <-- the modification (0.0 = literal). 0.1 is a common start.
+  entropy_temperature: 1.0   # softmax temperature for the soft assignment q
+  enc_ch: 128
+  enc_ch_mult: [1, 1, 2, 2, 4]
+  decoder_ch: 128
+  decoder_ch_mult: [1, 1, 2, 2, 4]
+  decoder_res_blocks: 2
+
+loss:
+  recon_loss_type: l2
+  perceptual_weight: 1.0
+  semantic_weight: 0.0
+  codebook_weight: 1.0
+  disc_weight: 1.0
+  disc_loss: hinge
+  lpips_net: vgg
+  gan_eta: 0.05
+
+train:
+  device: cuda
+  amp: bf16
+  batch_size: 16
+  grad_accum: 2
+  epochs: 100                # capped at 1000 steps via --max-steps for this experiment
+  lr: 1.0e-4
+  encoder_lr: 1.0e-4
+  beta1: 0.5
+  beta2: 0.9
+  weight_decay: 1.0e-4
+  warmup_steps: 2000
+  disc_start_step: 2000      # > 1000-step cap: GAN stays off in the short run
+  nested_dropout_prob: 0.25
+  log_every: 50
+  sample_every: 500
+  ckpt_every: 1000
+  val_every: 1000
+  val_fid: true
+  num_workers: 8
+  seed: 0
+
+wandb:
+  enabled: true
+  project: cvq-pokemon
+  entity: null
+  name: cvq-cnn-entropy0.1-cb16384-1k
+  mode: online
+  log_checkpoints: true
+
+out:
+  ckpt_dir: checkpoints
+  sample_dir: samples
+  run_dir: runs
+  keep_last: 3
