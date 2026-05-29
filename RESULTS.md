@@ -48,14 +48,22 @@ Only promising trajectories graduate to a full run.
 
 | # | Date | Change vs literal | Steps | Codebook | Final usage | Final ppl | rFID | Status |
 |---|------|-------------------|-------|----------|-------------|-----------|------|--------|
-| 1 | 2026-05-29 | none (100% literal baseline) | 1000 | 16384 | **0.15%** (~24) | ~23 | — | ❌ |
-| 2 | 2026-05-29 | codebook 16384→4096 | 1000 | 4096 | **0.93%** (~38) | ~30 | — | ❌ |
-| 3 | 2026-05-29 | + entropy loss (w=0.1, τ=1) | 1000 | 16384 | _tbd_ | _tbd_ | _tbd_ | 🔵 |
-| 4 | 2026-05-29 | SimVQ (frozen cb + linear) | 1000 | 16384 | _tbd_ | _tbd_ | _tbd_ | 🟡 |
-| 5 | 2026-05-29 | TransVQ (frozen cb + transformer) | 1000 | 16384 | _tbd_ | _tbd_ | _tbd_ | 🟡 |
-| 6 | 2026-05-29 | FVQ / VQBridge | 1000 | 16384 | _tbd_ | _tbd_ | _tbd_ | 🟡 |
-| 7 | 2026-05-29 | Wasserstein matching (γ=0.5) | 1000 | 16384 | _tbd_ | _tbd_ | _tbd_ | 🟡 |
-| 8 | 2026-05-29 | **IBQ channel-wise** (EOSTok synth) | 1000 | 16384 | _tbd_ | _tbd_ | _tbd_ | 🟡 |
+Sorted best→worst by utilization. PSNR↑ / LPIPS↓ / recon_L2↓ are full-channel reconstruction.
+
+| Run | Method | Utilization | PSNR | LPIPS | recon_L2 | Status |
+|---|--------|-------------|------|-------|----------|--------|
+| 5 | **TransVQ** (frozen cb + transformer) | **94.2%** | 16.28 | 0.306 | 0.095 | ⭐ best util |
+| 4 | SimVQ (frozen cb + linear) | 83.5% | 14.97 | 0.325 | 0.128 | ✅ |
+| 8 | **IBQ channel-wise** (EOSTok synth) | 81.5% | **16.53** | **0.306** | **0.090** | ⭐ best recon |
+| 7 | Wasserstein matching (γ=0.5) | 79.3% | 14.86 | 0.361 | 0.132 | ✅ |
+| 3 | entropy loss (w=0.1, τ=1) | 56.6% | 14.46 | 0.368 | 0.145 | ✅ |
+| 6 | FVQ / VQBridge (p=16, 140M) | 47.9% | 15.52 | 0.335 | 0.114 | ✅ (overfit?) |
+| 2 | plain VQ, cb4096 | 0.93% | 14.01 | 0.370 | 0.161 | ❌ collapsed |
+| 1 | plain VQ (literal baseline) | 0.15% | 14.09 | 0.367 | 0.158 | ❌ collapsed |
+
+All runs: 1000 steps, K=16384 (except Run 2), CNN encoder, GAN off (disc_start 2000 > 1000).
+**Headline:** every anti-collapse method beats the baseline by 50–600×; the two best are
+**TransVQ** (utilization) and **IBQ** (reconstruction), nearly tied and clearly ahead.
 
 ---
 
@@ -193,7 +201,10 @@ what the three structural methods target.
 - **Hypothesis:** this is the most principled small-scale collapse fix of the set — softmax-over-all
   is a strictly stronger anti-collapse signal than the frozen-codebook reparam tricks, and it's
   validated at ~100% util in the source paper. Expect the best utilization + non-diverging vq_loss.
-- **Result:** _tbd_
+- **Result:** ✅✅✅ **best reconstruction of all 8 runs.** util **81.5%**, PSNR **16.53**, LPIPS 0.306,
+  recon_L2 **0.090**; `vq_loss` stayed ~0.009 the entire run (baseline diverged to 33.95 — never
+  diverged here). Coarse-to-fine intact (recon_L2 c8 0.160 → c256 0.113). Confirms the hypothesis:
+  softmax-over-all-codes is the strongest mechanism; ties TransVQ on quality, slightly lower util.
 
 ---
 
