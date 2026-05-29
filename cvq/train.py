@@ -65,6 +65,22 @@ def lr_lambda(step: int, warmup: int):
     return min(1.0, (step + 1) / max(1, warmup))
 
 
+def split_decay_groups(params, lr: float, weight_decay: float):
+    """Split params into weight-decayed vs not. Standard rule (GPT/ViT/timm): tensors with
+    ndim >= 2 (conv/linear weights, embeddings/codebook) get weight decay; ndim < 2 (norm
+    gamma/beta, all biases) get weight_decay=0. Decaying a normalization's learnable scale
+    fights the normalization, so norms+biases are excluded. Returns 1-2 optimizer groups."""
+    params = [p for p in params if p.requires_grad]
+    decay = [p for p in params if p.ndim >= 2]
+    no_decay = [p for p in params if p.ndim < 2]
+    groups = []
+    if decay:
+        groups.append({"params": decay, "lr": lr, "weight_decay": weight_decay})
+    if no_decay:
+        groups.append({"params": no_decay, "lr": lr, "weight_decay": 0.0})
+    return groups
+
+
 def autocast_ctx(device: str, amp: str):
     """bf16 autocast on CUDA when amp=='bf16'; otherwise a no-op (fp32)."""
     if amp == "bf16" and device == "cuda":
@@ -118,24 +134,25 @@ def main():
     ).to(device)
 
     betas = (tcfg["beta1"], tcfg["beta2"])
+    wd = tcfg["weight_decay"]
     siglip_stage2 = mcfg.get("encoder_type", "siglip") == "siglip" and not mcfg["freeze_encoder"]
     if not siglip_stage2:
-        # CNN-from-scratch OR frozen-SigLIP Stage I: one group at the base lr.
-        g_groups = [{"params": tok.trainable_parameters(), "lr": tcfg["lr"]}]
+        # CNN-from-scratch OR frozen-SigLIP Stage I: one lr, split into decay/no-decay.
+        g_groups = split_decay_groups(tok.trainable_parameters(), tcfg["lr"], wd)
     else:
         # Stage II (end-to-end): finetune a *pretrained* SigLIP at a lower lr than the
-        # fresh head (paper Stage-II lr 2e-5 vs Stage-I 1e-4).
+        # fresh head (paper Stage-II lr 2e-5 vs Stage-I 1e-4). Each at its own lr, each
+        # further split into decay/no-decay groups.
         head = list(tok.adapter.parameters()) + list(tok.decoder.parameters())
         enc = [p for p in tok.encoder.parameters() if p.requires_grad]
-        g_groups = [
-            {"params": head, "lr": tcfg["lr"]},
-            {"params": enc, "lr": tcfg.get("encoder_lr", tcfg["lr"] * 0.2)},
-        ]
-        print(f"Stage II: finetuning encoder at lr={g_groups[1]['lr']:.1e}")
-    opt_g = torch.optim.AdamW(g_groups, betas=betas, weight_decay=tcfg["weight_decay"])
+        enc_lr = tcfg.get("encoder_lr", tcfg["lr"] * 0.2)
+        g_groups = (split_decay_groups(head, tcfg["lr"], wd)
+                    + split_decay_groups(enc, enc_lr, wd))
+        print(f"Stage II: finetuning encoder at lr={enc_lr:.1e}")
+    opt_g = torch.optim.AdamW(g_groups, betas=betas, weight_decay=wd)
     gen_params = [p for grp in g_groups for p in grp["params"]]
-    opt_d = torch.optim.AdamW(disc.parameters(), lr=tcfg["lr"], betas=betas,
-                              weight_decay=tcfg["weight_decay"])
+    opt_d = torch.optim.AdamW(split_decay_groups(list(disc.parameters()), tcfg["lr"], wd),
+                              betas=betas, weight_decay=wd)
     sched_g = torch.optim.lr_scheduler.LambdaLR(opt_g, lambda s: lr_lambda(s, tcfg["warmup_steps"]))
     sched_d = torch.optim.lr_scheduler.LambdaLR(opt_d, lambda s: lr_lambda(s, tcfg["warmup_steps"]))
 
