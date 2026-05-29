@@ -25,7 +25,7 @@ model:
   quantizer_kwargs:
     ibq_entropy_weight: 0.05  # EOSTok 0.01; bumped for small data per reader's note
     ibq_tau: 1.0
-    ibq_l2_norm: true
+    ibq_l2_norm: false        # IBQ-canonical dot product (Eq.3-4). cosine@tau=1 is degenerate at K=16384.
     ibq_reg_weight: 1.0
   enc_ch: 128
   enc_ch_mult: [1, 1, 2, 2, 4]

@@ -184,6 +184,12 @@ what the three structural methods target.
 - **Implementation:** `IBQChannelVQ` in `cvq/models/vq_variants.py`. Index-backprop STE
   `Ind = onehot + (p − sg[p])`, `z_q = Ind @ C` (no additive STE — grad to encoder flows through
   the softmax, IBQ's design). Config: `cvq_pokemon_cnn_ibq.yaml`. **Cost:** +4.2M (codebook).
+- **Logits fix (rechecked vs source):** uses IBQ-canonical **unnormalized dot product** `zᵀC`
+  (2412.02692 Eq.3-4), NOT EOSTok's cosine/τ. Verified: cosine ∈ [−1,1] over K=16384 with τ=1
+  makes the softmax permanently ~uniform (maxprob ≈ 1/K), crippling both the index-backprop
+  gradient and the entropy penalty — degenerate. Dot product is unbounded so the assignment
+  sharpens as the encoder learns (smoke test: maxprob 0.002→0.285 as feature scale 1→4). Cosine
+  remains available via `ibq_l2_norm=true` but needs a CLIP-style temp (τ≈0.07).
 - **Hypothesis:** this is the most principled small-scale collapse fix of the set — softmax-over-all
   is a strictly stronger anti-collapse signal than the frozen-codebook reparam tricks, and it's
   validated at ~100% util in the source paper. Expect the best utilization + non-diverging vq_loss.
