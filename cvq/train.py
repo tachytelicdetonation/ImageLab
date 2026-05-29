@@ -99,8 +99,7 @@ def main():
         siglip_name=mcfg["siglip_name"], siglip_layers=mcfg["siglip_layers"],
         freeze_encoder=mcfg["freeze_encoder"], resolution=cfg["data"]["size"],
         latent_channels=mcfg["latent_channels"],
-        codebook_size=mcfg["codebook_size"], codebook_ema=mcfg.get("codebook_ema", True),
-        commitment_beta=mcfg["commitment_beta"],
+        codebook_size=mcfg["codebook_size"], commitment_beta=mcfg["commitment_beta"],
         enc_ch=mcfg.get("enc_ch", 128), enc_ch_mult=tuple(mcfg.get("enc_ch_mult", [1, 1, 2, 2, 4])),
         decoder_ch=mcfg["decoder_ch"], decoder_ch_mult=tuple(mcfg["decoder_ch_mult"]),
         decoder_res_blocks=mcfg["decoder_res_blocks"],
@@ -239,18 +238,12 @@ def main():
                       f"rec {g_logs['loss/recon']:.3f} lpips {g_logs['loss/lpips']:.3f} "
                       f"vq {g_logs['loss/vq']:.4f} d {d_logs['loss/disc']:.3f} | "
                       f"use {out['stats']['usage']:.3f} ppl {out['stats']['perplexity']:.0f} "
-                      f"dead {tok.quantizer.codebook_health()['n_dead']} "
                       f"c_keep {ck_str} | {ips:.1f} img/s")
-                health = tok.quantizer.codebook_health()
                 scalars = {**g_logs, **d_logs}
                 scalars.update({
                     "codebook/usage_batch": out["stats"]["usage"],
                     "codebook/perplexity": out["stats"]["perplexity"],
                     "codebook/quant_error": out["stats"]["quant_error"],
-                    "codebook/n_dead": health["n_dead"],
-                    "codebook/cluster_size_min": health["cluster_size_min"],
-                    "codebook/cluster_size_mean": health["cluster_size_mean"],
-                    "codebook/cluster_size_max": health["cluster_size_max"],
                     "opt/lr_g": sched_g.get_last_lr()[0],
                     "opt/lr_d": sched_d.get_last_lr()[0],
                     "opt/grad_norm_g": gn_g,
