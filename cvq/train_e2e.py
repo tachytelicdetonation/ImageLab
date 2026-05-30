@@ -342,7 +342,8 @@ def sample_generations(car, tok, text_tok, prompts, device, amp, sample_dir, ste
                             cfg_scale=cfg_scale, uncond_text_ids=uncond_ids,
                             uncond_text_mask=uncond_mask)
         imgs = tok.decode(tok.quantizer.lookup(idxs))
-    grid = make_grid(denorm(imgs), nrow=len(prompts))
+    # .float().cpu(): grids are bf16 under autocast; wandb.Image -> numpy() has no bfloat16 dtype.
+    grid = make_grid(denorm(imgs).float().cpu(), nrow=len(prompts))
     save_image(grid, sample_dir / f"gen_{step:06d}.png")
     print(f"  sampled {len(prompts)} prompts -> gen_{step:06d}.png")
     if use_wandb and _HAS_WANDB:
