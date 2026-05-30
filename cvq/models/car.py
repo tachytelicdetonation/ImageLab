@@ -48,6 +48,10 @@ class CAR(nn.Module):
         freeze_backbone: bool = False,
         attn_impl: str = "sdpa",
         backbone_dtype: torch.dtype = torch.bfloat16,
+        head_type: str = "softmax",
+        mbm_depth: int = 2,
+        mbm_heads: int = 8,
+        mbm_infer_steps: int = 4,
     ):
         super().__init__()
         from transformers import AutoModelForCausalLM
@@ -55,6 +59,7 @@ class CAR(nn.Module):
         self.num_channels = num_channels
         self.codebook_size = codebook_size
         self.backbone_dtype = backbone_dtype
+        self.head_type = head_type
 
         # ---- LLM backbone (text embeddings + transformer stack) ----
         # bf16: hybrid linear-attention layers (qwen3_5) require it; plain LMs tolerate it.
@@ -76,13 +81,19 @@ class CAR(nn.Module):
         # Match the backbone dtype so concatenated embeddings are homogeneous.
         self.image_embed = nn.Embedding(codebook_size, self.hidden)
         self.boi = nn.Parameter(torch.zeros(1, 1, self.hidden))
-        self.image_head = nn.Linear(self.hidden, codebook_size, bias=False)
         nn.init.normal_(self.image_embed.weight, std=0.02)
         nn.init.normal_(self.boi, std=0.02)
-        nn.init.normal_(self.image_head.weight, std=0.02)
         self.image_embed.to(backbone_dtype)
-        self.image_head.to(backbone_dtype)
         self.boi.data = self.boi.data.to(backbone_dtype)
+        # Output head: flat K-way softmax (EOSTok/Fork A) or masked-bit modeling (BAR/Fork B).
+        if head_type == "mbm":
+            from .mbm_head import MBMHead
+            self.mbm = MBMHead(self.hidden, codebook_size, depth=mbm_depth,
+                               n_heads=mbm_heads, n_infer_steps=mbm_infer_steps)
+        else:
+            self.image_head = nn.Linear(self.hidden, codebook_size, bias=False)
+            nn.init.normal_(self.image_head.weight, std=0.02)
+            self.image_head.to(backbone_dtype)
 
     # ------------------------------------------------------------------ #
     def _run_backbone(self, inputs_embeds, attention_mask, past_key_values=None, use_cache=False):
@@ -109,33 +120,64 @@ class CAR(nn.Module):
         """Image head in fp32 for stable cross-entropy / softmax."""
         return self.image_head(hidden).float()
 
-    def forward(self, text_ids, text_mask, image_idxs, return_hidden=False):
-        """Teacher-forced next-channel prediction.
+    def _img_hidden(self, text_ids, text_mask, image_idxs):
+        """Teacher-forced backbone pass -> (B, C, H) hidden states at image positions.
 
-        Args:
-            text_ids:   (B, L) LLM token ids of the prompt (right-padded).
-            text_mask:  (B, L) 1 for real text tokens, 0 for pad.
-            image_idxs: (B, C) channel-token indices from the (frozen or joint) tokenizer.
-        Returns:
-            logits: (B, C, K) fp32 prediction for each image position.
-            (optionally) hidden at image positions (for inspection / APR).
-        """
+        Sequence [text, BOI, img_1..img_{C-1}] so position c predicts channel c. Head-agnostic:
+        both the softmax and MBM heads consume these hidden states."""
         B, L = text_ids.shape
         C = image_idxs.shape[1]
         te = self.text_embed(text_ids)                            # (B, L, H) backbone dtype
         boi = self.boi.expand(B, 1, self.hidden)
         ie = self.image_embed(image_idxs)                         # (B, C, H)
-        # [text, BOI, img_1..img_{C-1}] -> predicts img_1..img_C.
         seq = torch.cat([te.to(self.backbone_dtype), boi, ie[:, :-1]], dim=1)  # (B, L+C, H)
         img_mask = torch.ones(B, C, device=text_ids.device, dtype=text_mask.dtype)
         attn = torch.cat([text_mask, img_mask], dim=1)            # (B, L+C)
-
         hidden = self._run_backbone(seq, attn)                    # (B, L+C, H)
-        img_hidden = hidden[:, L:, :]                             # (B, C, H)
+        return hidden[:, L:, :]                                   # (B, C, H)
+
+    def forward(self, text_ids, text_mask, image_idxs, return_hidden=False):
+        """Softmax-head teacher-forced logits (B, C, K). MBM uses `ar_loss` instead."""
+        img_hidden = self._img_hidden(text_ids, text_mask, image_idxs)
         logits = self._logits(img_hidden)                        # (B, C, K) fp32
         if return_hidden:
             return logits, img_hidden
         return logits
+
+    def ar_loss(self, text_ids, text_mask, image_idxs, channel_weights=None):
+        """Unified AR objective -> (loss, logs, aux).
+
+        softmax head: (optionally channel-weighted) NTP cross-entropy; aux={'logits': (B,C,K)}
+                      so train_e2e can run the EOSTok APR soft-decode.
+        mbm head:     masked-bit BCE over each channel-token's bits (BAR); aux={} (the soft
+                      codebook APR is not defined for bit-prediction — disable lambda_apr)."""
+        B, C = image_idxs.shape
+        img_hidden = self._img_hidden(text_ids, text_mask, image_idxs)    # (B, C, H)
+        if self.head_type == "mbm":
+            ctx = img_hidden.reshape(B * C, self.hidden).float()
+            tgt = image_idxs.reshape(B * C)
+            loss, hlogs = self.mbm(ctx, tgt)
+            with torch.no_grad():
+                tok_acc = self.mbm.exact_match(ctx, tgt)
+            logs = {"car/ntp_loss": loss.item(), "car/bit_acc": hlogs["bit_acc"],
+                    "car/token_acc": tok_acc.item()}
+            return loss, logs, {}
+        logits = self._logits(img_hidden)                                # (B, C, K) fp32
+        K = logits.shape[-1]
+        ce_pt = F.cross_entropy(logits.reshape(-1, K), image_idxs.reshape(-1),
+                                reduction="none").reshape(B, C)
+        if channel_weights is None:
+            loss = ce_pt.mean()
+        else:
+            loss = (ce_pt * channel_weights.to(ce_pt.device)[None, :]).mean()
+        with torch.no_grad():
+            acc = (logits.argmax(-1) == image_idxs).float().mean()
+            cprefix = max(1, C // 4)
+            acc_prefix = (logits[:, :cprefix].argmax(-1) ==
+                          image_idxs[:, :cprefix]).float().mean()
+        logs = {"car/ntp_loss": loss.item(), "car/token_acc": acc.item(),
+                "car/token_acc_prefix": acc_prefix.item()}
+        return loss, logs, {"logits": logits}
 
     def loss(self, text_ids, text_mask, image_idxs, channel_weights: torch.Tensor | None = None):
         """NTP cross-entropy over image channels (EOSTok's L_NTP).
@@ -189,6 +231,24 @@ class CAR(nn.Module):
             logits = logits.masked_fill(logits < v[:, [-1]], -float("inf"))
         return torch.multinomial(logits.softmax(-1), 1)
 
+    def _sample_step(self, last_h, u_last_h, temperature, top_k, cfg_scale, do_cfg):
+        """Sample one channel-token index (B,1) from the current hidden state(s).
+
+        softmax: K-way (optionally CFG-mixed, top-k) sampling. mbm: iterative masked-bit
+        refinement via the MBM head (CFG mixes bit logits inside the head)."""
+        if self.head_type == "mbm":
+            if do_cfg:
+                idx = self.mbm.generate_cfg(last_h.float(), u_last_h.float(),
+                                            cfg_scale, temperature)
+            else:
+                idx = self.mbm.generate(last_h.float(), temperature)
+            return idx.unsqueeze(1)
+        logits = self._logits(last_h)
+        if do_cfg:
+            ulogits = self._logits(u_last_h)
+            logits = ulogits + cfg_scale * (logits - ulogits)
+        return self._sample_one(logits, temperature, top_k)
+
     @torch.no_grad()
     def _generate_cached(self, text_ids, text_mask, temperature, top_k, cfg_scale,
                          uncond_text_ids, uncond_text_mask):
@@ -212,11 +272,8 @@ class CAR(nn.Module):
 
         out_idxs = []
         for c in range(self.num_channels):
-            logits = self._logits(last_h)                            # (B, K) fp32
-            if do_cfg:
-                ulogits = self._logits(u_last_h)
-                logits = ulogits + cfg_scale * (logits - ulogits)
-            nxt = self._sample_one(logits, temperature, top_k)        # (B, 1)
+            nxt = self._sample_step(last_h, u_last_h if do_cfg else None,
+                                    temperature, top_k, cfg_scale, do_cfg)   # (B, 1)
             out_idxs.append(nxt)
             if c == self.num_channels - 1:
                 break
@@ -250,11 +307,9 @@ class CAR(nn.Module):
 
         out_idxs = []
         for _ in range(self.num_channels):
-            logits = self._logits(self._run_backbone(seq, attn)[:, -1, :])    # (B, K) fp32
-            if do_cfg:
-                ulogits = self._logits(self._run_backbone(useq, uattn)[:, -1, :])
-                logits = ulogits + cfg_scale * (logits - ulogits)
-            nxt = self._sample_one(logits, temperature, top_k)
+            last_h = self._run_backbone(seq, attn)[:, -1, :]
+            u_last_h = self._run_backbone(useq, uattn)[:, -1, :] if do_cfg else None
+            nxt = self._sample_step(last_h, u_last_h, temperature, top_k, cfg_scale, do_cfg)
             out_idxs.append(nxt)
             emb = self.image_embed(nxt)
             seq = torch.cat([seq, emb], dim=1)

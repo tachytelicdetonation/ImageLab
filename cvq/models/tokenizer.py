@@ -25,6 +25,7 @@ from torch import nn
 from .decoder import Decoder
 from .encoder_cnn import Encoder as CNNEncoder
 from .quantizer import IBQChannelVQ
+from .fsq import ChannelFSQ
 
 
 class CVQTokenizer(nn.Module):
@@ -35,6 +36,9 @@ class CVQTokenizer(nn.Module):
         codebook_size: int = 16384,
         commitment_beta: float = 0.25,
         quantizer_kwargs: dict | None = None,
+        quant_type: str = "ibq",
+        fsq_levels=None,
+        fsq_bits: int | None = None,
         enc_ch: int = 128,
         enc_ch_mult=(1, 1, 2, 2, 4),
         decoder_ch: int = 128,
@@ -50,12 +54,18 @@ class CVQTokenizer(nn.Module):
         )
         token_dim = g * g
 
-        self.quantizer = IBQChannelVQ(
-            codebook_size=codebook_size,
-            token_dim=token_dim,
-            commitment_beta=commitment_beta,
-            **(quantizer_kwargs or {}),
-        )
+        # Quantizer: channel-vector IBQ (Fork A, EOSTok-faithful) or channel-wise FSQ
+        # (Fork B / BAR — binary levels, parameter-free, bit-structured index for the MBM head).
+        if quant_type == "fsq":
+            levels = fsq_levels if fsq_levels else [2] * int(fsq_bits)
+            self.quantizer = ChannelFSQ(levels=levels, token_dim=token_dim)
+        else:
+            self.quantizer = IBQChannelVQ(
+                codebook_size=codebook_size,
+                token_dim=token_dim,
+                commitment_beta=commitment_beta,
+                **(quantizer_kwargs or {}),
+            )
         self.decoder = Decoder(
             ch=decoder_ch,
             out_ch=3,

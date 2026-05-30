@@ -77,7 +77,11 @@ def main():
     text_tok = AutoTokenizer.from_pretrained(qwen_name)
     car = CAR(codebook_size=K, num_channels=C, qwen_name=qwen_name,
               freeze_backbone=mcfg.get("freeze_backbone", False),
-              attn_impl=mcfg.get("attn_impl", "sdpa")).to(device)
+              attn_impl=mcfg.get("attn_impl", "sdpa"),
+              head_type=mcfg.get("head_type", "softmax"),
+              mbm_depth=mcfg.get("mbm_depth", 3),
+              mbm_heads=mcfg.get("mbm_heads", 8),
+              mbm_infer_steps=mcfg.get("mbm_infer_steps", 4)).to(device)
     print(f"CAR: {qwen_name} | trainable {sum(p.numel() for p in car.trainable_parameters())/1e6:.1f}M "
           f"| freeze_backbone={mcfg.get('freeze_backbone', False)}")
 
@@ -170,7 +174,8 @@ def main():
         opt_d.load_state_dict(ck["opt_d"]); start_step = ck["step"]
         print(f"resumed from {args.resume} @ step {start_step}")
 
-    cb = tok.quantizer.embed.weight  # (K, D) — live codebook for APR
+    has_codebook = hasattr(tok.quantizer, "embed")  # IBQ has a codebook; FSQ does not
+    cb = tok.quantizer.embed.weight if has_codebook else None  # (K, D) — live codebook for APR
 
     # ---- per-step work ----
     def generator_fn(batch, step):
@@ -194,42 +199,30 @@ def main():
         apr_loss = recon.new_zeros(())
         ar_logs = {}
         if ar_on:
-            logits = car(text_ids, text_mask, idxs.detach())  # (B, C, K)
-            # --- channel-weighted NTP (couples CVQ ordering to EOSTok's NTP) ---
-            ce_pt = torch.nn.functional.cross_entropy(
-                logits.reshape(-1, K), idxs.detach().reshape(-1),
-                reduction="none",
-            ).reshape(logits.shape[0], C)              # (B, C)
-            ntp_loss = (ce_pt * chan_w[None, :]).mean()  # mean(w)=1, scale preserved
-            with torch.no_grad():
-                acc = (logits.argmax(-1) == idxs).float().mean()
-                # Diagnostic: prefix accuracy on the first 25% of channels.
-                cprefix = max(1, C // 4)
-                acc_prefix = (logits[:, :cprefix].argmax(-1) ==
-                              idxs[:, :cprefix]).float().mean()
+            # AR objective via the head-agnostic seam: softmax NTP (Fork A) or MBM bit-CE
+            # (Fork B). channel_weights only apply to the softmax head; flat (uniform) for MBM.
+            use_cw = chan_w if cw_schedule != "uniform" else None
+            ntp_loss, ar_logs0, ar_aux = car.ar_loss(text_ids, text_mask, idxs.detach(),
+                                                     channel_weights=use_cw)
+            ar_logs.update(ar_logs0)
 
-            # --- APR with prefix-fidelity supervision ---
-            # Decode CAR's soft prediction back to pixels, but truncate to the SAME c_keep
-            # nested dropout drew this step. This forces the AR's prefix (early channels)
-            # to be sufficient for a coherent low-frequency reconstruction -- exactly what
-            # CVQ's nested dropout taught the tokenizer's decoder. Without this, APR only
-            # ever supervises the full 256-channel decode and never rewards prefix fidelity.
-            p_hat = logits.softmax(-1)
-            z_q_apr = torch.einsum("bck,kd->bcd", p_hat.float(), cb.float())
-            side = int(round((z_q_apr.shape[-1]) ** 0.5))
-            z_q_apr = z_q_apr.reshape(z_q_apr.shape[0], C, side, side).to(recon.dtype)
-            # Prefix-fidelity coupling. Floor c_keep so APR doesn't supervise on impossibly-
-            # short prefixes (see apr_min_c_keep_frac above).
-            c_keep_apr = max(c_keep, apr_min_c_keep) if c_keep is not None else None
-            z_q_apr = nested.apply(z_q_apr, c_keep_apr)
-            recon_apr = tok.decoder(z_q_apr)
-            apr_loss = torch.nn.functional.mse_loss(recon_apr, x)
-            if apr_lpips_w > 0:
-                apr_loss = apr_loss + apr_lpips_w * crit.perceptual(recon_apr, x).mean()
-            ar_logs = {"car/ntp_loss": ntp_loss.item(), "car/token_acc": acc.item(),
-                       "car/token_acc_prefix": acc_prefix.item(),
-                       "car/apr_loss": apr_loss.item(),
-                       "car/apr_c_keep": (c_keep_apr if c_keep_apr is not None else C)}
+            # --- APR (EOSTok): soft-decode the AR prediction to pixels, prefix-truncated to the
+            # step's c_keep. Softmax head + a real codebook only; the MBM/FSQ bit head has no
+            # soft-codebook decode, so Fork B runs with lambda_apr=0.
+            if has_codebook and lam_apr > 0 and "logits" in ar_aux:
+                logits = ar_aux["logits"]
+                p_hat = logits.softmax(-1)
+                z_q_apr = torch.einsum("bck,kd->bcd", p_hat.float(), cb.float())
+                side = int(round((z_q_apr.shape[-1]) ** 0.5))
+                z_q_apr = z_q_apr.reshape(z_q_apr.shape[0], C, side, side).to(recon.dtype)
+                c_keep_apr = max(c_keep, apr_min_c_keep) if c_keep is not None else None
+                z_q_apr = nested.apply(z_q_apr, c_keep_apr)
+                recon_apr = tok.decoder(z_q_apr)
+                apr_loss = torch.nn.functional.mse_loss(recon_apr, x)
+                if apr_lpips_w > 0:
+                    apr_loss = apr_loss + apr_lpips_w * crit.perceptual(recon_apr, x).mean()
+                ar_logs["car/apr_loss"] = apr_loss.item()
+                ar_logs["car/apr_c_keep"] = (c_keep_apr if c_keep_apr is not None else C)
         sem_loss = recon.new_zeros(())
         if dino is not None:
             sem_loss = dino(out["z"], x)
