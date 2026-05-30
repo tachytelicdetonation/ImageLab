@@ -376,3 +376,44 @@ what the screening runs above reveal.
   encoders. This is what motivated going 100% literal first and logging it as a data point.
 - EMA + restart (VILA-U lineage) **did** stabilize utilization in an earlier run, but is
   not in the paper, so it was stripped to establish the literal baseline. Kept as backlog #4.
+
+---
+
+# End-to-End EOSTok × CAR (joint tokenizer + autoregressive generation)
+
+Phase 2: joint training of the channel-vector IBQ tokenizer + channel-AR (CAR) on a Qwen3-0.6B
+backbone, EOSTok objective `L = L_VQVAE + 0.1·L_NTP + 1.0·L_APR + 1.0·L_implicit(DINOv2)`, pure
+joint from step 0. Data: 1339 Pokémon official-artwork images, Pokémon name as caption. Single
+RTX PRO 5000 Blackwell (48 GB).
+
+## Run B0 — faithful fast-iteration baseline (64px) — wandb `ty4hms8l`
+Config `car_e2e_pokemon_64_fast.yaml`. **Fully EOSTok-faithful**: K=16384 cosine IBQ, DINOv2-large
+alignment ON, Qwen backbone trainable, sampling = temp 1.0 / no top-k / no guidance (EOSTok's own
+headline protocol), caption dropout 0.1 (EOSTok Table 9). 64px (f=4) holds the 16×16 latent grid,
+so codebook + CAR geometry are identical to the 256px config — only resolution + schedule differ.
+Schedule rescaled for iteration (warmup 150, disc_start 400, capped at 1700 steps via `--max-steps`).
+
+| metric | step 0 | step 1650 (final) | reading |
+|---|---|---|---|
+| recon L2 (`rec`) | 0.872 | **0.074** | strong reconstruction |
+| LPIPS | 0.801 | **0.237** | perceptual sharpening (GAN on @ 400) |
+| APR (`apr`) | 1.654 | **0.474** | AR→pixel feedback working |
+| NTP CE (`ntp`) | 11.777 | **5.371** | from ln(16384)=9.70 floor → 5.4 (real learning) |
+| token_acc | 0.000 | **0.141** (peak 0.159) | CAR predicts ~14% of channel-tokens |
+| codebook usage / ppl | 0.215 / 1347 | **0.350 / 5119** | ~5k of 16384 codes active |
+
+- **Wall-clock ~18.5 min** (03:11:03→03:29:40 incl. model load), ~49 img/s. The 256px run was
+  17 img/s / 2.2h for the full 300-epoch schedule — iteration loop now ~7× shorter.
+- **Recon (step 1000): works** — recovers Pokémon silhouette, palette, coarse shape (Charizard
+  orange, Squirtle blue, Bulbasaur bulb). Mosaic-y at 64px but faithful.
+- **Generation (no-guidance, faithful): still abstract** — color-blob creatures, not recognizable.
+  Expected: token_acc 14% + 1339 images is data-starved for text→image. Pipeline is correct
+  end-to-end; *generation quality is a data problem, not a plumbing problem* (IDEAS.md C1).
+- **64px beats 256px on the AR metrics**: token_acc 0.14 vs ~0.0, ntp 5.4 vs ~9, usage 0.35 vs
+  ~0.05. Milder compression → cleaner, more-used codebook → a learnable target for the CAR head.
+  The EOSTok APR/usage thesis showing up in the numbers.
+
+**Checkpoints** (box `checkpoints_e2e_64_fast/`): step 500/1000/1500/1700 + latest.
+
+_Next levers (IDEAS.md): C1 dataset expansion (biggest real lever for generation), B2 codebook-
+utilization A/B, D3 BAR/LFQ for many-cheap-codes (separate paradigm — see bar-lfq-more-codes memory)._
