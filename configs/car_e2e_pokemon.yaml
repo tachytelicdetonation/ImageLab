@@ -24,7 +24,7 @@ model:
   quantizer_kwargs:
     ibq_l2_norm: true             # EOSTok cosine logits
     ibq_tau: 1.0                  # AS-IS (degeneracy risk at K=16384 acknowledged)
-    ibq_entropy_weight: 0.05
+    ibq_entropy_weight: 0.01      # EOSTok Table 9 (was 0.05)
     ibq_reg_weight: 1.0
     ibq_entropy_temperature: 0.01
   enc_ch: 128
@@ -33,7 +33,7 @@ model:
   decoder_ch_mult: [1, 1, 2, 2, 4]
   decoder_res_blocks: 2
   # --- CAR backbone ---
-  qwen_name: Qwen/Qwen3-0.6B-Base
+  qwen_name: Qwen/Qwen3.5-0.8B    # hybrid linear-attn multimodal LM; text decoder via get_decoder(), bf16
   freeze_backbone: false
   attn_impl: sdpa
   max_text_len: 16
@@ -65,10 +65,10 @@ train:
   warmup_steps: 2000
   grad_clip: 1.0
   disc_start_step: 2000           # GAN turn-on (tokenizer fidelity)
-  ar_start_step: 3000             # ramp NTP+APR on AFTER the tokenizer is non-garbage
-  lambda_ntp: 1.0                 # EOSTok L_NTP weight
-  lambda_apr: 1.0                 # EOSTok L_APR weight (the generative-feedback keystone)
-  apr_lpips_weight: 0.0           # optional perceptual term on the APR recon
+  ar_start_step: 0                # PURE EOSTok: NTP+APR joint from step 0 (no warmup), per paper
+  lambda_ntp: 0.1                 # EOSTok Table 9 (was wrongly 1.0)
+  lambda_apr: 1.0                 # EOSTok L_APR weight (the generative-feedback keystone; ablation-best)
+  apr_lpips_weight: 1.0           # EOSTok: L_APR = L2 + LPIPS (was 0.0 — now faithful)
   nested_dropout_prob: 0.25
   log_every: 50
   sample_every: 500
