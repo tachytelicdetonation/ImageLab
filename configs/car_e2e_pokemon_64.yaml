@@ -37,9 +37,14 @@ model:
   dino_name: facebook/dinov2-large
   max_text_len: 16
   sample_prompts: [pikachu, charizard, bulbasaur, mewtwo, rayquaza mega, gengar, eevee, snorlax]
+  # --- EOSTok-faithful sampling (arXiv:2605.00503, §experiments + Table 9) ---
+  # Paper samples with "temperature of 1.0 without top-k or top-p"; headline FID 1.48 is
+  # reported WITHOUT guidance. So our primary protocol = no top-k, no guidance. CFG is kept
+  # available (paper uses it for small models: l_g = l_u + s(l_c - l_u)) but as a SECONDARY
+  # sweep, not the default — we don't bake in an unsourced scale.
   temperature: 1.0
-  top_k: 250            # K=16384; top_k=0 sampled the full 16k tail -> noise. 200-500 is the AR-image norm.
-  cfg_scale: 3.0        # classifier-free guidance (needs cond_dropout_prob>0 to be meaningful)
+  top_k: 0              # EOSTok: no top-k/top-p (the APR loss shapes the token dist instead)
+  cfg_scale: 1.0        # primary = without guidance (EOSTok's own headline protocol)
 
 loss:
   recon_loss_type: l2
