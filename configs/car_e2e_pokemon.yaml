@@ -33,10 +33,11 @@ model:
   decoder_ch_mult: [1, 1, 2, 2, 4]
   decoder_res_blocks: 2
   # --- CAR backbone ---
-  qwen_name: Qwen/Qwen3.5-0.8B    # hybrid linear-attn multimodal LM; text decoder via get_decoder(), bf16
+  qwen_name: Qwen/Qwen3-0.6B      # normal 0.6B (instruct), plain attention -> fast on this box.
+                                  # Qwen3.5-0.8B deferred (linear-attn ~23min/step, no sm_120 kernels).
   freeze_backbone: false
   attn_impl: sdpa
-  dino_name: facebook/dinov2-large  # frozen VFM for EOSTok semantic alignment (ViT-L/14, hidden 1024)
+  dino_name: facebook/dinov2-large  # DINOv2 ViT-L/14 (verified working). DINOv3 deferred (224px grid fix).
   max_text_len: 16
   sample_prompts: [pikachu, charizard, bulbasaur, mewtwo, rayquaza mega, gengar, eevee, snorlax]
   temperature: 1.0
@@ -82,7 +83,7 @@ wandb:
   enabled: true
   project: cvq-pokemon
   entity: null
-  name: e2e-eostok-car-cosine-cb16384
+  name: e2e-eostok-car-qwen0.6b-dinov2-cb16384
   mode: online
 
 out:

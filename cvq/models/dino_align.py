@@ -58,9 +58,12 @@ class DINOAlign(nn.Module):
         patch = getattr(dcfg, "patch_size", 16)
         dino_dim = dino_dim or getattr(dcfg, "hidden_size", 1024)
         self.dino_dim = dino_dim
-        # Feed the VFM at a resolution whose patch grid == our latent grid (exact, no interp).
-        # DINOv3 patch16 + grid16 -> 256px native. DINOv2 patch14 + grid16 -> 224px.
-        self.dino_res = dino_res or (grid * patch)
+        # Feed the VFM at its canonical 224px eval resolution and INTERPOLATE its patch grid to
+        # our latent grid (the forward() handles g*g != P). 224 is the safe grid for both:
+        #   DINOv2 patch14 -> 16x16 = 256 (== our grid, no interp);
+        #   DINOv3 patch16 -> 14x14 = 196 (interp 14->16). DINOv3's pos-embed reshape asserts on
+        #   its 14x14 reference, so feeding 256px (grid*patch) CRASHES -- 224 is required.
+        self.dino_res = dino_res or 224
 
         # h_omega: learned MLP projecting the latent's per-patch channels -> VFM dim.
         self.proj = nn.Sequential(
