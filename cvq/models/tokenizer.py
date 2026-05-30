@@ -95,6 +95,7 @@ class CVQTokenizer(nn.Module):
             "vq_loss": vq_loss,
             "indices": idxs,
             "stats": stats,
+            "z": z,            # pre-quant latent (for DINOv2 semantic alignment in E2E)
         }
 
     def trainable_parameters(self):
