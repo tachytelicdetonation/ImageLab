@@ -36,6 +36,7 @@ model:
   qwen_name: Qwen/Qwen3.5-0.8B    # hybrid linear-attn multimodal LM; text decoder via get_decoder(), bf16
   freeze_backbone: false
   attn_impl: sdpa
+  dino_name: facebook/dinov2-large  # frozen VFM for EOSTok semantic alignment (ViT-L/14, hidden 1024)
   max_text_len: 16
   sample_prompts: [pikachu, charizard, bulbasaur, mewtwo, rayquaza mega, gengar, eevee, snorlax]
   temperature: 1.0
@@ -69,6 +70,7 @@ train:
   lambda_ntp: 0.1                 # EOSTok Table 9 (was wrongly 1.0)
   lambda_apr: 1.0                 # EOSTok L_APR weight (the generative-feedback keystone; ablation-best)
   apr_lpips_weight: 1.0           # EOSTok: L_APR = L2 + LPIPS (was 0.0 — now faithful)
+  lambda_sem: 1.0                 # EOSTok L_implicit (DINOv2 alignment) weight, Table 9. 0 disables.
   nested_dropout_prob: 0.25
   log_every: 50
   sample_every: 500

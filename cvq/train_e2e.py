@@ -136,6 +136,15 @@ def main():
     print(f"CAR: {qwen_name} | trainable {sum(p.numel() for p in car.trainable_parameters())/1e6:.1f}M "
           f"| freeze_backbone={mcfg.get('freeze_backbone', False)}")
 
+    # ---- DINOv2 semantic alignment (EOSTok L_implicit, optional) ----
+    lam_sem = tcfg.get("lambda_sem", 0.0)
+    dino = None
+    if lam_sem > 0:
+        from cvq.models.dino_align import DINOAlign
+        dino = DINOAlign(latent_channels=C, grid=tok.grid,
+                         dino_name=mcfg.get("dino_name", "facebook/dinov2-large")).to(device)
+        print(f"DINOv2 alignment: ON | lambda_sem={lam_sem} | {mcfg.get('dino_name', 'facebook/dinov2-large')}")
+
     # ---- data ----
     ds = CARPokemonDataset(cfg["data"]["root"], size=cfg["data"]["size"], hflip=cfg["data"]["hflip"])
     collate = CARCollate(text_tok, max_len=mcfg.get("max_text_len", 16))
@@ -149,6 +158,9 @@ def main():
     tok_groups = split_decay_groups(tok.trainable_parameters(), tcfg["lr"], wd)
     car_groups = split_decay_groups(car.trainable_parameters(), tcfg.get("car_lr", tcfg["lr"]), wd)
     g_groups = tok_groups + car_groups
+    if dino is not None:
+        # h_omega (the alignment projector) is the only trainable part of DINOAlign.
+        g_groups = g_groups + split_decay_groups(list(dino.proj.parameters()), tcfg["lr"], wd)
     opt_g = torch.optim.AdamW(g_groups, betas=betas, weight_decay=wd)
     opt_d = torch.optim.AdamW(split_decay_groups(list(disc.parameters()), tcfg["lr"], wd),
                               betas=betas, weight_decay=wd)
@@ -241,7 +253,11 @@ def main():
                         apr_loss = apr_loss + apr_lpips_w * crit.perceptual(recon_apr, x).mean()
                     ntp_logs = {"car/ntp_loss": ntp_loss.item(), "car/token_acc": acc.item(),
                                 "car/apr_loss": apr_loss.item()}
-                total = g_total + lam_ntp * ntp_loss + lam_apr * apr_loss
+                sem_loss = recon.new_zeros(())
+                if dino is not None:
+                    sem_loss = dino(out["z"], x)                   # EOSTok L_implicit (cosine)
+                    ntp_logs["car/sem_loss"] = sem_loss.item()
+                total = g_total + lam_ntp * ntp_loss + lam_apr * apr_loss + lam_sem * sem_loss
             (total / accum).backward()
             for p in disc.parameters():
                 p.requires_grad_(True)
