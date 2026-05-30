@@ -14,8 +14,10 @@ from pathlib import Path
 import torch
 from torchvision.utils import make_grid, save_image
 
+from cvq.checkpoint import CheckpointStore
+from cvq.conditioning import Conditioning
 from cvq.models.car import CAR
-from cvq.reconstruct import build_from_ckpt
+from cvq.tokenizer_factory import build_tokenizer
 from cvq.utils import resolve_device
 
 
@@ -33,26 +35,24 @@ def main():
     args = ap.parse_args()
     device = resolve_device(args.device)
 
-    tok, _ = build_from_ckpt(args.tokenizer_ckpt, device)
+    tok, _ = build_tokenizer({}, device, ckpt=args.tokenizer_ckpt)
     tok.eval()
-    ck = torch.load(args.car_ckpt, map_location=device)
+    ck = CheckpointStore.load(args.car_ckpt, map_location=device)
     cfg = ck["config"]["model"]
     from transformers import AutoTokenizer
-    text_tok = AutoTokenizer.from_pretrained(cfg.get("qwen_name", "Qwen/Qwen3-0.6B-Base"))
+    qwen_name = cfg.get("qwen_name", "Qwen/Qwen3-0.6B-Base")
+    text_tok = AutoTokenizer.from_pretrained(qwen_name)
     car = CAR(codebook_size=tok.quantizer.codebook_size, num_channels=tok.latent_channels,
-              qwen_name=cfg.get("qwen_name", "Qwen/Qwen3-0.6B-Base")).to(device)
+              qwen_name=qwen_name).to(device)
     car.load_state_dict(ck["car"]); car.eval()
 
+    cond = Conditioning(text_tok, max_len=cfg.get("max_text_len", 16), device=device)
     prompts = [p.replace("-", " ") for p in args.prompts]
-    max_len = cfg.get("max_text_len", 16)
-    enc = text_tok(prompts, padding="longest", truncation=True, max_length=max_len,
-                   return_tensors="pt")
-    text_ids, text_mask = enc["input_ids"].to(device), enc["attention_mask"].to(device)
+    text_ids, text_mask = cond.encode_batch(prompts)
+    text_ids = text_ids.to(device); text_mask = text_mask.to(device)
     uncond_ids = uncond_mask = None
     if args.cfg != 1.0:
-        unc = text_tok([""] * len(prompts), padding="max_length", max_length=text_ids.shape[1],
-                       return_tensors="pt")
-        uncond_ids, uncond_mask = unc["input_ids"].to(device), unc["attention_mask"].to(device)
+        uncond_ids, uncond_mask = cond.unconditional(len(prompts), L=text_ids.shape[1], device=device)
 
     idxs = car.generate(text_ids, text_mask, temperature=args.temperature, top_k=args.top_k,
                         cfg_scale=args.cfg, uncond_text_ids=uncond_ids,

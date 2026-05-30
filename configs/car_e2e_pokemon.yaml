@@ -1,15 +1,22 @@
 # END-TO-END EOSTok x CAR: joint tokenizer + autoregressive text-to-image, trained together.
 #
 # This is EOSTok's objective (arXiv:2605.00503) on our channel-wise stack:
-#     L_E2E = L_VQVAE + lambda_NTP * L_NTP + lambda_APR * L_APR
+#     L_E2E = L_VQVAE + lambda_NTP * L_NTP_weighted + lambda_APR * L_APR_prefix
+#                                                 + lambda_sem * L_implicit
 # The tokenizer is TRAINABLE and learns jointly with the CAR (NOT the staged frozen-tokenizer
 # baseline in train_car.py). APR decodes the CAR's soft teacher-forced prediction back to pixels,
 # so generation feedback flows into the tokenizer codebook + decoder.
 #
-# Tokenizer = EOSTok-faithful cosine IBQ, but at K=16384, tau=1 AS-IS (user-requested ablation).
-# NOTE: cosine logits in [-1,1] over a 16384-way softmax at tau=1 are near-flat, so codebook
-# usage may be weaker than the dot-product path. This is a deliberate, measured ablation, not an
-# oversight — watch codebook/usage_batch + perplexity.
+# Four couplings beyond plain CVQ+EOSTok, since this is the union not the sum of the two papers:
+#   1. NTP is channel-weighted (early > late) so the AR is told CVQ's prefix matters more.
+#   2. APR decodes after nested.apply(c_keep) so the AR's PREFIX is supervised to be
+#      sufficient for a coarse reconstruction — mirrors what nested dropout teaches the
+#      tokenizer decoder, only now applied to the AR's own predictions.
+#   3. CFG: cond_dropout_prob=0.1 trains the unconditional path so cfg_scale>1 can be used.
+#   4. IBQ cosine softmax sharpened (tau=0.07, CLIP-style) so K=16384 isn't degenerate.
+#
+# `lambda_sem` was 1.0 (10x lambda_ntp) -> the encoder was being pulled toward DINOv2's
+# geometry an order of magnitude harder than toward AR-predictability. Now 0.3.
 
 data:
   root: data
@@ -23,7 +30,9 @@ model:
   commitment_beta: 0.25
   quantizer_kwargs:
     ibq_l2_norm: true             # EOSTok cosine logits
-    ibq_tau: 1.0                  # AS-IS (degeneracy risk at K=16384 acknowledged)
+    ibq_tau: 0.07                 # CLIP-style sharpening: cosine in [-1,1] / 0.07 spans ~30 nats,
+                                  # so a K=16384 softmax can actually become peaked. The old
+                                  # tau=1.0 left the softmax near-uniform (degenerate IBQ).
     ibq_entropy_weight: 0.01      # EOSTok Table 9 (was 0.05)
     ibq_reg_weight: 1.0
     ibq_entropy_temperature: 0.01
@@ -42,7 +51,7 @@ model:
   sample_prompts: [pikachu, charizard, bulbasaur, mewtwo, rayquaza mega, gengar, eevee, snorlax]
   temperature: 1.0
   top_k: 0
-  cfg_scale: 1.0
+  cfg_scale: 1.0                  # primary EOSTok-faithful sampling. Try 1.5–3 once trained.
 
 loss:
   recon_loss_type: l2
@@ -68,11 +77,20 @@ train:
   grad_clip: 1.0
   disc_start_step: 2000           # GAN turn-on (tokenizer fidelity)
   ar_start_step: 0                # PURE EOSTok: NTP+APR joint from step 0 (no warmup), per paper
-  lambda_ntp: 0.1                 # EOSTok Table 9 (was wrongly 1.0)
+  lambda_ntp: 0.1                 # EOSTok Table 9
   lambda_apr: 1.0                 # EOSTok L_APR weight (the generative-feedback keystone; ablation-best)
-  apr_lpips_weight: 1.0           # EOSTok: L_APR = L2 + LPIPS (was 0.0 — now faithful)
-  lambda_sem: 1.0                 # EOSTok L_implicit (DINOv2 alignment) weight, Table 9. 0 disables.
+  apr_lpips_weight: 1.0           # EOSTok: L_APR = L2 + LPIPS
+  lambda_sem: 0.3                 # Was 1.0 -> outpulled NTP (0.1) by 10x. 0.3 keeps DINOv2 a
+                                  # regularizer without dominating AR-predictability.
   nested_dropout_prob: 0.25
+  cond_dropout_prob: 0.1          # CFG prerequisite: ~10% caption->empty drop, per sample.
+                                  # Without this, cfg_scale>1 at inference is garbage.
+  channel_weight_schedule: linear # uniform | linear | sqrt | exp.  Couples CVQ's coarse->fine
+                                  # channel ordering to EOSTok's NTP+APR. mean(w)=1 keeps the
+                                  # overall loss scale unchanged -- lambda_ntp/_apr untouched.
+  channel_weight_alpha: 1.5       # linear: alpha=1.5 -> 3:1 first/last ratio (the recommended
+                                  # gentle coupling). alpha=2 silences the last channel. alpha=1
+                                  # is uniform. Also used by exp (alpha=1 -> ~2.7:1).
   log_every: 50
   sample_every: 500
   ckpt_every: 1000
@@ -83,7 +101,7 @@ wandb:
   enabled: true
   project: cvq-pokemon
   entity: null
-  name: e2e-eostok-car-qwen0.6b-dinov2-cb16384
+  name: e2e-cvqxeostok-cw-linear-cfg0.1-tau0.07-sem0.3
   mode: online
 
 out:

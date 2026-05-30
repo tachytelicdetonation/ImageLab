@@ -85,14 +85,25 @@ class CAR(nn.Module):
         self.boi.data = self.boi.data.to(backbone_dtype)
 
     # ------------------------------------------------------------------ #
-    def _run_backbone(self, inputs_embeds, attention_mask):
-        """Return last hidden states (B, T, hidden) for a full causal pass."""
+    def _run_backbone(self, inputs_embeds, attention_mask, past_key_values=None, use_cache=False):
+        """Return last hidden states (B, T, hidden) for a causal pass.
+
+        When use_cache=True, also returns past_key_values for incremental decoding.
+        Used by the cached generate() path: text+BOI is run once to seed the cache, then
+        each subsequent step feeds a single new embedding -> O(C) total backbone work
+        instead of O(C^2) (vs the old re-run-the-whole-sequence loop).
+        """
         out = self.decoder_lm(
             inputs_embeds=inputs_embeds.to(self.backbone_dtype),
             attention_mask=attention_mask,
-            use_cache=False,
+            past_key_values=past_key_values,
+            use_cache=use_cache,
         )
-        return out.last_hidden_state if hasattr(out, "last_hidden_state") else out[0]
+        hidden = out.last_hidden_state if hasattr(out, "last_hidden_state") else out[0]
+        if use_cache:
+            past = getattr(out, "past_key_values", None)
+            return hidden, past
+        return hidden
 
     def _logits(self, hidden):
         """Image head in fp32 for stable cross-entropy / softmax."""
@@ -126,12 +137,23 @@ class CAR(nn.Module):
             return logits, img_hidden
         return logits
 
-    def loss(self, text_ids, text_mask, image_idxs):
-        """NTP cross-entropy over image channels (EOSTok's L_NTP)."""
+    def loss(self, text_ids, text_mask, image_idxs, channel_weights: torch.Tensor | None = None):
+        """NTP cross-entropy over image channels (EOSTok's L_NTP).
+
+        If `channel_weights` is given (shape (C,), mean=1), the per-channel CE is reweighted
+        so early (coarse) channels are penalized more -- the formal coupling between CVQ's
+        coarse-to-fine channel ordering and EOSTok's flat NTP loss. mean(w)=1 keeps the
+        overall scale equal to the unweighted loss.
+        """
         logits = self(text_ids, text_mask, image_idxs)            # (B, C, K) fp32
-        loss = F.cross_entropy(
-            logits.reshape(-1, self.codebook_size), image_idxs.reshape(-1)
-        )
+        B, C, K = logits.shape
+        ce_pt = F.cross_entropy(
+            logits.reshape(-1, K), image_idxs.reshape(-1), reduction="none",
+        ).reshape(B, C)
+        if channel_weights is None:
+            loss = ce_pt.mean()
+        else:
+            loss = (ce_pt * channel_weights.to(ce_pt.device)[None, :]).mean()
         with torch.no_grad():
             acc = (logits.argmax(-1) == image_idxs).float().mean()
         return loss, {"car/ntp_loss": loss.item(), "car/token_acc": acc.item()}
@@ -139,12 +161,79 @@ class CAR(nn.Module):
     # ------------------------------------------------------------------ #
     @torch.no_grad()
     def generate(self, text_ids, text_mask, temperature=1.0, top_k=0,
-                 cfg_scale=1.0, uncond_text_ids=None, uncond_text_mask=None):
+                 cfg_scale=1.0, uncond_text_ids=None, uncond_text_mask=None,
+                 use_cache: bool = True):
         """Autoregressively sample C channel-tokens conditioned on text.
 
         Classifier-free guidance: if cfg_scale>1, logit = uncond + cfg_scale*(cond - uncond).
         Returns: (B, C) sampled indices, ready for tokenizer.lookup -> decode.
+
+        Default uses HF's KV cache (O(C) total backbone work). Pass use_cache=False to
+        fall back to the old no-cache path -- kept primarily as a sanity check that the
+        cached path produces the same logits.
         """
+        if use_cache:
+            return self._generate_cached(
+                text_ids, text_mask, temperature, top_k, cfg_scale,
+                uncond_text_ids, uncond_text_mask,
+            )
+        return self._generate_nocache(
+            text_ids, text_mask, temperature, top_k, cfg_scale,
+            uncond_text_ids, uncond_text_mask,
+        )
+
+    def _sample_one(self, logits, temperature, top_k):
+        logits = logits / max(temperature, 1e-6)
+        if top_k > 0:
+            v, _ = torch.topk(logits, top_k, dim=-1)
+            logits = logits.masked_fill(logits < v[:, [-1]], -float("inf"))
+        return torch.multinomial(logits.softmax(-1), 1)
+
+    @torch.no_grad()
+    def _generate_cached(self, text_ids, text_mask, temperature, top_k, cfg_scale,
+                         uncond_text_ids, uncond_text_mask):
+        """KV-cache path: text+BOI is processed once, then one embed/step thereafter."""
+        B = text_ids.shape[0]
+        dev = text_ids.device
+        do_cfg = cfg_scale != 1.0 and uncond_text_ids is not None
+
+        def seed(ids, mask):
+            te = self.text_embed(ids)
+            boi = self.boi.expand(B, 1, self.hidden)
+            seq = torch.cat([te.to(self.backbone_dtype), boi], dim=1)
+            am = torch.cat([mask, torch.ones(B, 1, device=dev, dtype=mask.dtype)], 1)
+            hidden, past = self._run_backbone(seq, am, past_key_values=None, use_cache=True)
+            return hidden[:, -1, :], past, am
+
+        last_h, past, attn = seed(text_ids, text_mask)
+        upast = uattn = None
+        if do_cfg:
+            u_last_h, upast, uattn = seed(uncond_text_ids, uncond_text_mask)
+
+        out_idxs = []
+        for c in range(self.num_channels):
+            logits = self._logits(last_h)                            # (B, K) fp32
+            if do_cfg:
+                ulogits = self._logits(u_last_h)
+                logits = ulogits + cfg_scale * (logits - ulogits)
+            nxt = self._sample_one(logits, temperature, top_k)        # (B, 1)
+            out_idxs.append(nxt)
+            if c == self.num_channels - 1:
+                break
+            emb = self.image_embed(nxt)                               # (B, 1, H)
+            attn = torch.cat([attn, torch.ones(B, 1, device=dev, dtype=attn.dtype)], 1)
+            hidden, past = self._run_backbone(emb, attn, past_key_values=past, use_cache=True)
+            last_h = hidden[:, -1, :]
+            if do_cfg:
+                uattn = torch.cat([uattn, torch.ones(B, 1, device=dev, dtype=uattn.dtype)], 1)
+                u_hidden, upast = self._run_backbone(emb, uattn, past_key_values=upast, use_cache=True)
+                u_last_h = u_hidden[:, -1, :]
+        return torch.cat(out_idxs, dim=1)                             # (B, C)
+
+    @torch.no_grad()
+    def _generate_nocache(self, text_ids, text_mask, temperature, top_k, cfg_scale,
+                          uncond_text_ids, uncond_text_mask):
+        """Original O(C^2) path. Kept as a sanity reference for the cached path."""
         B = text_ids.shape[0]
         dev = text_ids.device
         do_cfg = cfg_scale != 1.0 and uncond_text_ids is not None
@@ -165,19 +254,15 @@ class CAR(nn.Module):
             if do_cfg:
                 ulogits = self._logits(self._run_backbone(useq, uattn)[:, -1, :])
                 logits = ulogits + cfg_scale * (logits - ulogits)
-            logits = logits / max(temperature, 1e-6)
-            if top_k > 0:
-                v, _ = torch.topk(logits, top_k, dim=-1)
-                logits[logits < v[:, [-1]]] = -float("inf")
-            nxt = torch.multinomial(logits.softmax(-1), 1)        # (B, 1)
+            nxt = self._sample_one(logits, temperature, top_k)
             out_idxs.append(nxt)
-            emb = self.image_embed(nxt)                           # (B, 1, H)
+            emb = self.image_embed(nxt)
             seq = torch.cat([seq, emb], dim=1)
             attn = torch.cat([attn, torch.ones(B, 1, device=dev, dtype=attn.dtype)], 1)
             if do_cfg:
                 useq = torch.cat([useq, emb], dim=1)
                 uattn = torch.cat([uattn, torch.ones(B, 1, device=dev, dtype=uattn.dtype)], 1)
-        return torch.cat(out_idxs, dim=1)                         # (B, C)
+        return torch.cat(out_idxs, dim=1)
 
     def soft_embed(self, p_hat):
         """Embed a SOFT distribution over codes: (B,C,K) -> (B,C,H). Used by the APR path so
