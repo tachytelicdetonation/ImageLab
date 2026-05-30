@@ -1,0 +1,91 @@
+# EOSTok x channel-vector CAR @ 64px — FAST-ITERATION (~18-20 min) run.
+#
+# SAME METHOD as car_e2e_pokemon_64.yaml — fully EOSTok-faithful, K=16384 (NOT reduced),
+# DINOv2-large alignment ON, Qwen-0.6B backbone TRAINABLE, channel-vector IBQ tokenizer.
+# The ONLY change vs the 2.2h run is the SCHEDULE: 300 epochs was paper-final overkill for
+# iteration. We cut to ~1700 steps and rescale warmup/GAN-on proportionally so the short run
+# is still well-formed (warmup completes, GAN turns on ~25% through, AR trains throughout).
+# Nothing about the loss, codebook size, or model is sacrificed — this is a length change.
+#
+# Speed floor is the trainable Qwen backbone + K-sized ops (resolution-independent); ~50 img/s.
+# 1700 steps * 32 img / 50 img/s ~= 18 min + model load. Want MORE codes than 16384 cheaply?
+# that needs BAR/LFQ (bit tokens) — a separate paradigm (see IDEAS.md D3), not this run.
+
+data:
+  root: data
+  size: 64
+  hflip: true
+  augment: false                  # tiny-dataset aug available; off for a clean faithful baseline
+
+model:
+  latent_channels: 256
+  codebook_size: 16384            # KEPT large (user: more codes, not fewer)
+  commitment_beta: 0.25
+  quantizer_kwargs:
+    ibq_l2_norm: true             # EOSTok cosine logits
+    ibq_tau: 1.0
+    ibq_entropy_weight: 0.01
+    ibq_reg_weight: 1.0
+    ibq_entropy_temperature: 0.01
+  enc_ch: 128
+  enc_ch_mult: [1, 2, 4]          # 64 -> 16 (f=4); grid stays 16x16 (codebook+CAR geometry fixed)
+  decoder_ch: 128
+  decoder_ch_mult: [1, 2, 4]
+  decoder_res_blocks: 2
+  qwen_name: Qwen/Qwen3-0.6B
+  freeze_backbone: false          # faithful joint E2E (backbone trainable)
+  attn_impl: sdpa
+  dino_name: facebook/dinov2-large
+  max_text_len: 16
+  sample_prompts: [pikachu, charizard, bulbasaur, mewtwo, rayquaza mega, gengar, eevee, snorlax]
+  # EOSTok-faithful sampling: temperature 1.0, no top-k/top-p, no guidance (headline protocol).
+  temperature: 1.0
+  top_k: 0
+  cfg_scale: 1.0
+
+loss:
+  recon_loss_type: l2
+  perceptual_weight: 1.0
+  codebook_weight: 1.0
+  disc_weight: 1.0
+  disc_loss: hinge
+  lpips_net: vgg
+  gan_eta: 0.05
+
+train:
+  device: cuda
+  amp: bf16
+  batch_size: 32
+  grad_accum: 1
+  epochs: 50                      # ~2050 steps available; --max-steps caps the wall-clock at ~18min
+  lr: 1.0e-4
+  car_lr: 5.0e-5
+  beta1: 0.5
+  beta2: 0.9
+  weight_decay: 1.0e-4
+  warmup_steps: 150               # rescaled from 2000 for the short run (was paper-length)
+  grad_clip: 1.0
+  disc_start_step: 400            # GAN on ~25% through (was 2000) — recon has formed by then
+  ar_start_step: 0                # pure EOSTok joint from step 0
+  cond_dropout_prob: 0.1          # EOSTok Table 9 "Class dropout ratio 0.1" (CFG-capable)
+  lambda_ntp: 0.1
+  lambda_apr: 1.0
+  apr_lpips_weight: 1.0
+  lambda_sem: 1.0
+  nested_dropout_prob: 0.25
+  log_every: 50
+  sample_every: 250               # more frequent in a short run
+  ckpt_every: 500
+  num_workers: 8                  # free: tiny 64px imgs, 440GB host RAM — keep GPU fed
+  seed: 0
+
+wandb:
+  enabled: true
+  project: cvq-pokemon
+  entity: null
+  name: e2e-eostok-car-qwen0.6b-64px-fast
+  mode: online
+
+out:
+  ckpt_dir: checkpoints_e2e_64_fast
+  sample_dir: samples_e2e_64_fast
