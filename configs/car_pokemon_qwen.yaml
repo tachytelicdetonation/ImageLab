@@ -1,0 +1,42 @@
+# CAR — channel-wise autoregressive text-to-image, Qwen3-0.6B backbone, on a FROZEN
+# EOSTok tokenizer (K=4096). Baseline: EOSTok's NTP objective only (APR + tokenizer
+# unfreeze come next). Pass --tokenizer_ckpt to point at the trained tokenizer.
+
+model:
+  qwen_name: Qwen/Qwen3-0.6B-Base   # latest small Qwen, base (non-instruct) for conditioning
+  freeze_backbone: false            # 0.6B on ~1.3k imgs overfits — documented baseline; flip to true for frozen-LLM
+  attn_impl: sdpa
+  max_text_len: 16                  # pokemon names are short
+  # sampling
+  sample_prompts: [pikachu, charizard, bulbasaur, mewtwo, rayquaza mega, gengar, eevee, snorlax]
+  temperature: 1.0
+  top_k: 0
+  cfg_scale: 1.0                    # >1 enables classifier-free guidance (empty-prompt uncond)
+
+train:
+  device: cuda
+  amp: bf16
+  batch_size: 16
+  grad_accum: 1
+  epochs: 200
+  lr: 1.0e-4
+  weight_decay: 0.05
+  warmup_steps: 200
+  grad_clip: 1.0
+  hflip: true
+  log_every: 25
+  sample_every: 500
+  ckpt_every: 1000
+  num_workers: 8
+  seed: 0
+
+wandb:
+  enabled: true
+  project: cvq-pokemon
+  entity: null
+  name: car-qwen0.6b-eostok-frozen
+  mode: online
+
+out:
+  ckpt_dir: checkpoints_car
+  sample_dir: samples_car

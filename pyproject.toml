@@ -7,8 +7,9 @@ dependencies = [
     # Core DL — torch>=2.4.1 per the CVQ README; MPS (Apple Metal) backend ships in the standard wheels.
     "torch>=2.4.1",
     "torchvision>=0.19.1",
-    # transformers pinned to the exact version the paper used (SigLIP encoder lives here).
-    "transformers==4.50.3",
+    # transformers: needs >=4.52.4 for Qwen3ForCausalLM (the CAR backbone). No longer used
+    # for SigLIP (that path was removed); the only HF model now is Qwen3-0.6B for the CAR.
+    "transformers>=4.52.4",
     # Perceptual loss used by VQGAN/CVQ reconstruction objective.
     "lpips>=0.1.4",
     # Data + utilities
