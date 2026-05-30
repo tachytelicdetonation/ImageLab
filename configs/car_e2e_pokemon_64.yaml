@@ -1,7 +1,8 @@
 # END-TO-END EOSTok x CAR @ 64x64 — FAST-ITERATION config.
 #
 # Same objective as car_e2e_pokemon.yaml (256px):
-#     L_E2E = L_VQVAE + lambda_NTP * L_NTP + lambda_APR * L_APR + lambda_sem * L_implicit
+#     L_E2E = L_VQVAE + lambda_NTP * L_NTP_weighted + lambda_APR * L_APR_prefix
+#                                                 + lambda_sem * L_implicit
 # Only the PIXEL resolution changes (256 -> 64). The latent grid is held at 16x16 by dropping
 # the encoder/decoder downsample factor f from 16 to 4 (enc_ch_mult length 5 -> 3). So:
 #   * codebook geometry is UNCHANGED  (token_dim = g*g = 16*16 = 256)
@@ -10,6 +11,12 @@
 # What gets faster: encoder/decoder convs, LPIPS, GAN, APR re-decode (16x fewer pixels). The
 # Qwen-0.6B CAR cost is the SAME (it always sees 256 tokens) — this is the speed floor.
 # DINOv2-large still gets fed at 224px internally -> 16x16=256 patches == our grid (no interp).
+#
+# Four CVQxEOSTok couplings (kept in sync with car_e2e_pokemon.yaml):
+#   1. NTP is channel-weighted (early > late) -> AR is told CVQ's prefix matters more.
+#   2. APR decodes after nested.apply(c_keep) -> AR's PREFIX is supervised for coarse fidelity.
+#   3. cond_dropout_prob=0.1 -> trains uncond path so cfg_scale>1 at inference is meaningful.
+#   4. ibq_tau=0.07 (cosine) -> K=16384 softmax can actually peak (was degenerate at tau=1.0).
 
 data:
   root: data
@@ -22,7 +29,7 @@ model:
   commitment_beta: 0.25
   quantizer_kwargs:
     ibq_l2_norm: true
-    ibq_tau: 1.0
+    ibq_tau: 0.07                 # CLIP-style sharpening (was 1.0 -> degenerate at K=16384).
     ibq_entropy_weight: 0.01
     ibq_reg_weight: 1.0
     ibq_entropy_temperature: 0.01
@@ -74,8 +81,10 @@ train:
   lambda_ntp: 0.1
   lambda_apr: 1.0
   apr_lpips_weight: 1.0
-  lambda_sem: 1.0
+  lambda_sem: 0.3          # Was 1.0 -> outpulled NTP (0.1) by 10x. 0.3 keeps DINOv2 a regularizer.
   nested_dropout_prob: 0.25
+  channel_weight_schedule: linear  # couples CVQ coarse->fine to EOSTok NTP+APR; mean(w)=1.
+  channel_weight_alpha: 1.5        # linear alpha=1.5 -> 3:1 first/last ratio.
   log_every: 50
   sample_every: 500
   ckpt_every: 1000
@@ -86,7 +95,7 @@ wandb:
   enabled: true
   project: cvq-pokemon
   entity: null
-  name: e2e-eostok-car-qwen0.6b-64px-cfg
+  name: e2e-cvqxeostok-64px-cw-linear-cfg0.1-tau0.07-sem0.3
   mode: online
 
 out:

@@ -131,7 +131,11 @@ class IBQChannelVQ(nn.Module):
 
     @staticmethod
     def truncate(z_q: torch.Tensor, c_keep: int) -> torch.Tensor:
-        """Nested channel dropout: keep first c_keep channels, mask the rest to zero."""
+        """Nested channel dropout: keep first c_keep channels, mask the rest to zero.
+
+        Kept here so CVQTokenizer.forward (and any callers using c_keep through the
+        tokenizer) work as before; the canonical home of nested-dropout is
+        cvq.nested_dropout.HybridUniformPolicy.apply (same math)."""
         if c_keep >= z_q.shape[1]:
             return z_q
         out = z_q.clone()

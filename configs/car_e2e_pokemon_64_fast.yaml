@@ -7,6 +7,9 @@
 # is still well-formed (warmup completes, GAN turns on ~25% through, AR trains throughout).
 # Nothing about the loss, codebook size, or model is sacrificed — this is a length change.
 #
+# Carries the four CVQxEOSTok couplings: channel-weighted NTP, APR prefix-truncation,
+# CFG dropout, sharpened cosine IBQ. See car_e2e_pokemon.yaml header for the full rationale.
+#
 # Speed floor is the trainable Qwen backbone + K-sized ops (resolution-independent); ~50 img/s.
 # 1700 steps * 32 img / 50 img/s ~= 18 min + model load. Want MORE codes than 16384 cheaply?
 # that needs BAR/LFQ (bit tokens) — a separate paradigm (see IDEAS.md D3), not this run.
@@ -23,7 +26,7 @@ model:
   commitment_beta: 0.25
   quantizer_kwargs:
     ibq_l2_norm: true             # EOSTok cosine logits
-    ibq_tau: 1.0
+    ibq_tau: 0.07                 # CLIP-style sharpening (was 1.0 -> degenerate at K=16384).
     ibq_entropy_weight: 0.01
     ibq_reg_weight: 1.0
     ibq_entropy_temperature: 0.01
@@ -71,8 +74,10 @@ train:
   lambda_ntp: 0.1
   lambda_apr: 1.0
   apr_lpips_weight: 1.0
-  lambda_sem: 1.0
+  lambda_sem: 0.3                 # Was 1.0 -> outpulled NTP (0.1) by 10x. 0.3 keeps DINOv2 a regularizer.
   nested_dropout_prob: 0.25
+  channel_weight_schedule: linear # CVQ coarse->fine coupled to EOSTok NTP+APR (mean(w)=1).
+  channel_weight_alpha: 1.5       # linear alpha=1.5 -> 3:1 first/last channel ratio.
   log_every: 50
   sample_every: 250               # more frequent in a short run
   ckpt_every: 500
@@ -83,7 +88,7 @@ wandb:
   enabled: true
   project: cvq-pokemon
   entity: null
-  name: e2e-eostok-car-qwen0.6b-64px-fast
+  name: e2e-cvqxeostok-64px-fast-cw-linear-cfg0.1-tau0.07-sem0.3
   mode: online
 
 out:

@@ -19,24 +19,16 @@ from torch.utils.data import DataLoader
 from torchvision.utils import make_grid, save_image
 
 from cvq.data.dataset import PokemonDataset
-from cvq.models.tokenizer import CVQTokenizer
+from cvq.tokenizer_factory import build_tokenizer
 from cvq.utils import resolve_device
 
 
 def build_from_ckpt(ckpt_path: str, device: str):
-    ck = torch.load(ckpt_path, map_location=device)
-    cfg = ck["config"]
-    m = cfg["model"]
-    tok = CVQTokenizer(
-        resolution=cfg["data"]["size"],
-        latent_channels=m["latent_channels"],
-        codebook_size=m["codebook_size"], commitment_beta=m["commitment_beta"],
-        quantizer_kwargs=m.get("quantizer_kwargs", None),
-        enc_ch=m.get("enc_ch", 128), enc_ch_mult=tuple(m.get("enc_ch_mult", [1, 1, 2, 2, 4])),
-        decoder_ch=m["decoder_ch"], decoder_ch_mult=tuple(m["decoder_ch_mult"]),
-        decoder_res_blocks=m["decoder_res_blocks"],
-    ).to(device)
-    tok.load_state_dict(ck["tokenizer"], strict=False)
+    """Back-compat wrapper around cvq.tokenizer_factory.build_tokenizer.
+
+    Kept because external callers (train_car.py and downstream scripts) import this
+    name. The factory is the single source of truth for tokenizer construction."""
+    tok, cfg = build_tokenizer({}, device, ckpt=ckpt_path)
     tok.eval()
     return tok, cfg
 
