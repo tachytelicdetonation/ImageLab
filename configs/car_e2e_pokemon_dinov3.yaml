@@ -36,7 +36,8 @@ model:
   qwen_name: Qwen/Qwen3.5-0.8B    # hybrid linear-attn multimodal LM; text decoder via get_decoder(), bf16
   freeze_backbone: false
   attn_impl: sdpa
-  dino_name: facebook/dinov2-large  # frozen VFM for EOSTok semantic alignment (ViT-L/14, hidden 1024)
+  dino_name: facebook/dinov3-vitl16-pretrain-lvd1689m  # DINOv3 ViT-L/16 (hidden 1024, patch16 -> exact
+  # 16x16 grid match at native 256px, no interpolation). GATED: needs HF_TOKEN + license acceptance.
   max_text_len: 16
   sample_prompts: [pikachu, charizard, bulbasaur, mewtwo, rayquaza mega, gengar, eevee, snorlax]
   temperature: 1.0
@@ -86,5 +87,5 @@ wandb:
   mode: online
 
 out:
-  ckpt_dir: checkpoints_e2e
-  sample_dir: samples_e2e
+  ckpt_dir: checkpoints_e2e_dinov3
+  sample_dir: samples_e2e_dinov3
