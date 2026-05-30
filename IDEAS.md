@@ -27,10 +27,15 @@ have, (B) tokenizer/decoder fidelity, (C) attacking the data bottleneck, (D) big
   at sampling on a checkpoint. Pure inference sweep, no retrain needed for the sweep itself.
 
 ### A2. Sampling hyperparameters
-- **Finding:** AR image gen wants `top_k` ~100–1000 (large vocab), `temperature` ~0.9–1.0.
-- **Our state:** `top_k: 0` (disabled), `temperature: 1.0`. With K=16384, top_k=0 samples from
-  the full 16k tail every channel → noise. Set `top_k: 200–500`, try `top_p: 0.9`.
-- **Action:** add top-p to `generate()` if not present; sweep alongside CFG. ~free.
+- **CORRECTION (EOSTok-faithful):** EOSTok (2605.00503) samples with *"temperature of 1.0
+  without top-k or top-p"* and reports its headline FID **1.48 *without* guidance**. The
+  top_k~100–1000 advice is from VQGAN/LlamaGen — a *different* tokenizer family. EOSTok can
+  skip top-k because its **APR loss shapes the token distribution to be generation-aware**
+  during joint training, so the softmax has no noisy 16k tail to truncate. Top-k here is
+  redundant-with / unfaithful-to EOSTok's core contribution.
+- **Faithful protocol:** primary = `top_k=0`, `temperature=1.0`, `cfg_scale=1.0` (no guidance).
+  CFG is a SECONDARY sweep only (paper uses it for small models as `l_g=l_u+s(l_c−l_u)`).
+- **Caption dropout 0.1 IS faithful** — it's EOSTok Table 9 ("Class dropout ratio 0.1"), kept.
 
 ### A3. Heavier data augmentation
 - **Our state:** `hflip: true` only. On 1.3k images this is the cheapest effective-data multiplier.
