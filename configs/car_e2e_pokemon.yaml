@@ -86,5 +86,5 @@ wandb:
   mode: online
 
 out:
-  ckpt_dir: checkpoints_e2e
-  sample_dir: samples_e2e
+  ckpt_dir: checkpoints_e2e_dinov2
+  sample_dir: samples_e2e_dinov2
