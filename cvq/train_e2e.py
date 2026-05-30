@@ -146,7 +146,8 @@ def main():
         print(f"DINOv2 alignment: ON | lambda_sem={lam_sem} | {mcfg.get('dino_name', 'facebook/dinov2-large')}")
 
     # ---- data ----
-    ds = CARPokemonDataset(cfg["data"]["root"], size=cfg["data"]["size"], hflip=cfg["data"]["hflip"])
+    ds = CARPokemonDataset(cfg["data"]["root"], size=cfg["data"]["size"], hflip=cfg["data"]["hflip"],
+                           augment=cfg["data"].get("augment", False))
     collate = CARCollate(text_tok, max_len=mcfg.get("max_text_len", 16))
     dl = DataLoader(ds, batch_size=tcfg["batch_size"], shuffle=True,
                     num_workers=tcfg["num_workers"], drop_last=True, collate_fn=collate)
