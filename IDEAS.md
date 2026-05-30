@@ -100,6 +100,81 @@ have, (B) tokenizer/decoder fidelity, (C) attacking the data bottleneck, (D) big
   channel order already is a coarse→fine curriculum. Could reframe CAR as next-scale over channel
   groups. Research-grade rearchitecture.
 
+### D3. CVQ × FSQ × BAR — channel-FSQ tokenizer + masked-bit CAR head  ★ the real generation lever
+*(arXiv:2602.09024 BAR; LFQ/MAGVIT-v2; FSQ 2309.15505; BSQ/Infinity. Supersedes the old "raw-LFQ
+big-codebook" framing in `[[bar-lfq-more-codes]]`.)*
+
+**Why this exists.** On 1.3k images reconstruction is fine but *generation* is data-starved, and the
+root cause is mechanical: the CAR head predicts **one 1-of-16384 index per channel**. With ~1.3k
+images that categorical is unlearnable (`token_acc≈0.012`, near-random). BAR's finding is that you
+don't fix this with *more tokens per channel* (RVQ lengthens the sequence) — you **factorize the
+prediction target**. Keep one token per channel, make that token a **bit code**, and predict its
+bits. The per-step problem drops from 1-of-16384 to k≈14 cheap low-cardinality choices, and the head
+goes from O(K) to **O(log₂K)**. This is the only idea here that structurally attacks the gap rather
+than nibbling at it.
+
+**What changes vs. the faithful EOSTok×CVQ baseline (Fork A):**
+
+| Component | Fork A (faithful) | Fork B (this) |
+|---|---|---|
+| Quantizer | channel-vector cosine **IBQ**, K=16384 codebook | channel-wise **FSQ/BSQ**, parameter-free, k bits |
+| Quant losses | commitment + codebook + entropy (`L_Q`,`L_E`) | **none** — FSQ needs no aux losses (recon only) |
+| CAR head | `image_head: Linear(hidden, K)` + K-way softmax | **MBM**: bit embedding + masked-bit-modeling head |
+| AR loss | (flat) NTP cross-entropy over K | **bit-wise CE** with random bit masking |
+| Codebook collapse | the whole reason IBQ exists | gone by construction (FSQ ~100% usage) |
+
+**Preserved (still CVQ, still EOSTok-shaped):** channel-wise tokenization (the token is a channel),
+coarse-to-fine **nested dropout**, next-**channel** AR over the Qwen backbone, text conditioning + CFG
+dropout, the **APR** loss, optional DINOv2 alignment. Only the *discretizer* and the *prediction head*
+change.
+
+**Architecture sketch.**
+1. **Channel-wise FSQ tokenizer** (`cvq/models/fsq.py`, analog of `quantizer.py`):
+   - Encoder → `z ∈ (B, C=256, h, w)`; per channel the content is its `h·w=256`-dim spatial map.
+   - Shared (weight-tied across channels) down-projection `256 → d_fsq` (`d_fsq≈5–14`).
+   - **FSQ:** bound each of the `d_fsq` scalars (`tanh`+`round`-STE) to `L` levels → code = `∏ levels`.
+     Default to match K=16384: `levels=[8,8,8,8,4]` (5 dims) **or** pure-binary **BSQ** `[2]×14`
+     (sign-quantize, k=14 independent bits — the MBM-friendliest start).
+   - Up-projection `d_fsq → 256`, reshape to `(h,w)`, feed the **same** VQGAN decoder.
+   - Nested dropout still zeroes the tail channels of `z_q` before decode → coarse-to-fine ordering
+     unchanged; FSQ only changes *how each channel is discretized*.
+   - The index ↔ bit string is now **meaningful** (FSQ digit expansion) — exactly the structure IBQ
+     lacks and what makes bit-prediction pay off.
+2. **MBM CAR head** (`cvq/models/mbm_head.py`, used by a head-gated `car.py`):
+   - **Input embedding:** embed the channel's bit code as a sum of per-bit/per-digit embeddings →
+     `hidden`, replacing `image_embed: Embedding(K, hidden)`.
+   - **Output (BAR Eq.6–7):** the Qwen hidden state `h_i` (context `[text][BOI][ch_1..ch_{i-1}]`)
+     conditions a small masked-bit head that predicts channel `i`'s k bits by **iterative unmasking**
+     (mask a subset, predict, reveal, repeat). Train with random mask ratio + **bit-wise CE** over
+     masked positions; sample with a schedule (`[4,4,4,4]` for 14–16 bits). MBM beats a plain
+     parallel-Bernoulli bit head — the masking is a regularizer (BAR §3.4).
+3. **Loss mapping** (`train_e2e.py`):
+   - `L_NTP → L_bit` (bit-wise CE, O(k) not O(K)).
+   - `L_APR` **kept** and gets *cleaner*: soft-decode predicted bit-probabilities → expected FSQ value
+     → decoder → L2+LPIPS. Still the key low-data lever.
+   - `L_VQVAE` shrinks to **recon + GAN only** (no commitment/codebook/entropy).
+   - `L_implicit` (DINOv2) unchanged, optional.
+
+**Files:** new `cvq/models/fsq.py`, `cvq/models/mbm_head.py`, `configs/car_e2e_pokemon_64_bar.yaml`;
+gate `quantizer_type: fsq` in `tokenizer_factory.py` and `head_type: mbm` in `car.py`; add the bit-CE
++ soft-bit-APR path in `train_e2e.py` (drop codebook/entropy logs when FSQ).
+
+**Prototype plan & success criteria.**
+1. *Tokenizer alone, recon-only:* channel-FSQ should match IBQ recon (`recon ≲ 0.04`, `lpips ≲ 0.15`)
+   with ~100% usage by construction. If recon regresses, raise `d_fsq` / level budget. **Go/no-go.**
+2. *+ MBM head:* log **bit-accuracy** and channel **exact-match**; compare gen to Fork A at matched
+   steps. Success = generations become recognizable, or exact-match ≫ Fork A's `token_acc`.
+3. *Scale test:* head is O(log K), so push `levels` up (bigger effective K) and check recon improves
+   **without** the AR getting harder — the property single-index IBQ can't give us.
+
+**Risks / open questions.** (a) Channel-wise FSQ is non-standard (FSQ is usually on spatial tokens) —
+the per-channel down/up projection is the novel, unproven part; verify it keeps coarse-to-fine channel
+semantics under nested dropout. (b) The `256→d_fsq` bottleneck may cap recon; tune `d_fsq`. (c)
+Inference is 256 channel-steps × a short inner unmask loop — confirm it stays cheap. (d) This is
+**explicitly a new method, not EOSTok** — keep Fork A as the faithful baseline and run B as a labeled
+ablation (working name: **Bit-CAR / channel-FSQ-AR**). Tension with `[[cvq-fidelity-preference]]` is
+intentional and bounded: B is the "make generation work" bet, A stays the paper-faithful control.
+
 ---
 
 ## Suggested execution order
@@ -110,9 +185,15 @@ have, (B) tokenizer/decoder fidelity, (C) attacking the data bottleneck, (D) big
 4. **C1** dataset expansion (biggest real lever for generation).
 5. **B1 FlowMo decoder** if recon fidelity is the visible bottleneck after the above.
 6. Park **C2 / D1 / D2** as labeled ablations.
+7. **D3 (Bit-CAR / channel-FSQ + MBM)** — the structural fix for generation; prototype after A–C if the
+   gap persists, or sooner if generation (not recon) is the priority. Tokenizer recon is the go/no-go.
 
 ## References
 - FlowMo: Variational Flow Matching for Image Tokenization — arXiv:2503.11056
 - GigaTok: Scaling Visual Tokenizers to 3B — arXiv:2504.08736
 - MAR: Autoregressive Image Generation without Vector Quantization — arXiv:2406.11838
 - CFG for AR visual gen: LlamaGen / VAR / MUSE / MaskGIT (standard practice, scale 1.5–7.5, ~10% cond-drop)
+- BAR: Autoregressive Image Generation with Masked Bit Modeling — arXiv:2602.09024 (D3 head)
+- FSQ: Finite Scalar Quantization (VQ-VAE made simple) — arXiv:2309.15505 (D3 quantizer)
+- LFQ / MAGVIT-v2 — arXiv:2310.05737; BSQ / Infinity — bit-token tokenizers (D3 lineage)
+- RQ-VAE / RQ-Transformer: residual quant, multi-token-per-unit — arXiv:2203.01941 (D3 alternative)
