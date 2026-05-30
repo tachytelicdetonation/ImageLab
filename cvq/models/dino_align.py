@@ -13,15 +13,20 @@ is a small LEARNED MLP projector (its params omega are optimized jointly), and s
 Implementation notes / faithful adaptations for our channel-wise CNN stack:
   * h_Enc: we align the pre-quant latent z (B, Cch, 16, 16). EOSTok aligns a pre-latent encoder
     hidden so z itself isn't forced to match; with a CNN encoder the pre-quant feature map is the
-    natural REPA hook and keeps the patch grid (16x16) aligned to DINOv2's. Documented deviation.
-  * y: DINOv2-ViT-L/14 patch tokens. At 224x224 the grid is 224/14 = 16x16 = 256 patches, which
-    EXACTLY matches our 16x16 latent grid, so alignment is per-patch with no interpolation.
+    natural REPA hook and keeps the patch grid (16x16) aligned to the VFM's. Documented deviation.
+  * y: VFM patch tokens. DINOv3 ViT/16 at NATIVE 256x256 gives 256/16 = 16x16 = 256 patches,
+    EXACTLY our 16x16 latent grid -> per-patch alignment with NO interpolation and no downscale.
+    (DINOv2-ViT-L/14 needed 224x224 to land on 16x16; DINOv3's patch-16 is the cleaner match.)
   * EOSTok also has a decoder-alignment term on masked-decoder tokens. Our VQGAN decoder has no
     mask tokens, so that term is omitted (would require a masked-decoder rebuild). The implicit
     term is EOSTok's main contributor (Table 2).
 
-DINOv2 is frozen (no grad); only h_omega and (through the cosine target) the encoder/tokenizer
-receive gradient. Image is renormalized from [-1,1] (our pixel range) to ImageNet stats for DINOv2.
+The VFM is frozen (no grad); only h_omega and (through the cosine target) the encoder/tokenizer
+receive gradient. Image is renormalized from [-1,1] (our range) to ImageNet stats.
+
+Works with DINOv2 (facebook/dinov2-large, patch14) or DINOv3 (facebook/dinov3-vitl16-pretrain-
+lvd1689m, patch16 — gated, needs HF_TOKEN). Patch tokens are taken as the LAST grid*grid tokens
+of last_hidden_state, which robustly skips the CLS token AND DINOv3's register tokens.
 """
 
 from __future__ import annotations
@@ -36,19 +41,28 @@ _IMAGENET_STD = (0.229, 0.224, 0.225)
 
 class DINOAlign(nn.Module):
     def __init__(self, latent_channels: int, grid: int,
-                 dino_name: str = "facebook/dinov2-large", dino_dim: int = 1024,
-                 proj_hidden: int = 2048, dino_res: int = 224):
+                 dino_name: str = "facebook/dinov3-vitl16-pretrain-lvd1689m",
+                 dino_dim: int | None = None, proj_hidden: int = 2048,
+                 dino_res: int | None = None):
         super().__init__()
         from transformers import AutoModel
 
         self.grid = grid
-        self.dino_res = dino_res
         self.dino = AutoModel.from_pretrained(dino_name)
         self.dino.eval()
         for p in self.dino.parameters():
             p.requires_grad_(False)
 
-        # h_omega: learned MLP projecting the latent's per-patch channels -> DINOv2 dim.
+        # Read patch size + hidden dim from the VFM config so DINOv2/DINOv3/any-size just work.
+        dcfg = self.dino.config
+        patch = getattr(dcfg, "patch_size", 16)
+        dino_dim = dino_dim or getattr(dcfg, "hidden_size", 1024)
+        self.dino_dim = dino_dim
+        # Feed the VFM at a resolution whose patch grid == our latent grid (exact, no interp).
+        # DINOv3 patch16 + grid16 -> 256px native. DINOv2 patch14 + grid16 -> 224px.
+        self.dino_res = dino_res or (grid * patch)
+
+        # h_omega: learned MLP projecting the latent's per-patch channels -> VFM dim.
         self.proj = nn.Sequential(
             nn.Linear(latent_channels, proj_hidden), nn.GELU(),
             nn.Linear(proj_hidden, proj_hidden), nn.GELU(),
@@ -59,14 +73,15 @@ class DINOAlign(nn.Module):
 
     @torch.no_grad()
     def _dino_features(self, x):
-        """x in [-1,1] (B,3,H,W) -> frozen DINOv2 patch features (B, grid*grid, dino_dim)."""
+        """x in [-1,1] (B,3,H,W) -> frozen VFM patch features (B, grid*grid, dino_dim)."""
         x01 = (x.clamp(-1, 1) * 0.5 + 0.5)                         # -> [0,1]
         x01 = F.interpolate(x01, size=(self.dino_res, self.dino_res),
                             mode="bicubic", align_corners=False)
         x01 = (x01 - self.mean) / self.std
         out = self.dino(pixel_values=x01)
-        feat = out.last_hidden_state[:, 1:, :]                     # drop CLS -> (B, P, dino_dim)
-        return feat
+        # Take the LAST grid*grid tokens -> robustly skips CLS (DINOv2) and CLS+registers (DINOv3).
+        P = self.grid * self.grid
+        return out.last_hidden_state[:, -P:, :]                    # (B, P, dino_dim)
 
     def forward(self, z, x):
         """z: (B, Cch, g, g) pre-quant latent. x: (B,3,H,W) source image in [-1,1].
