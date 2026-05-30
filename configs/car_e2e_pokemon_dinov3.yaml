@@ -1,0 +1,90 @@
+# END-TO-END EOSTok x CAR: joint tokenizer + autoregressive text-to-image, trained together.
+#
+# This is EOSTok's objective (arXiv:2605.00503) on our channel-wise stack:
+#     L_E2E = L_VQVAE + lambda_NTP * L_NTP + lambda_APR * L_APR
+# The tokenizer is TRAINABLE and learns jointly with the CAR (NOT the staged frozen-tokenizer
+# baseline in train_car.py). APR decodes the CAR's soft teacher-forced prediction back to pixels,
+# so generation feedback flows into the tokenizer codebook + decoder.
+#
+# Tokenizer = EOSTok-faithful cosine IBQ, but at K=16384, tau=1 AS-IS (user-requested ablation).
+# NOTE: cosine logits in [-1,1] over a 16384-way softmax at tau=1 are near-flat, so codebook
+# usage may be weaker than the dot-product path. This is a deliberate, measured ablation, not an
+# oversight — watch codebook/usage_batch + perplexity.
+
+data:
+  root: data
+  size: 256
+  hflip: true
+
+model:
+  # --- tokenizer arch (channel-wise IBQ, cosine, K=16384) ---
+  latent_channels: 256
+  codebook_size: 16384            # user-requested: full IBQ-native codebook
+  commitment_beta: 0.25
+  quantizer_kwargs:
+    ibq_l2_norm: true             # EOSTok cosine logits
+    ibq_tau: 1.0                  # AS-IS (degeneracy risk at K=16384 acknowledged)
+    ibq_entropy_weight: 0.01      # EOSTok Table 9 (was 0.05)
+    ibq_reg_weight: 1.0
+    ibq_entropy_temperature: 0.01
+  enc_ch: 128
+  enc_ch_mult: [1, 1, 2, 2, 4]
+  decoder_ch: 128
+  decoder_ch_mult: [1, 1, 2, 2, 4]
+  decoder_res_blocks: 2
+  # --- CAR backbone ---
+  qwen_name: Qwen/Qwen3.5-0.8B    # hybrid linear-attn multimodal LM; text decoder via get_decoder(), bf16
+  freeze_backbone: false
+  attn_impl: sdpa
+  dino_name: facebook/dinov2-large  # frozen VFM for EOSTok semantic alignment (ViT-L/14, hidden 1024)
+  max_text_len: 16
+  sample_prompts: [pikachu, charizard, bulbasaur, mewtwo, rayquaza mega, gengar, eevee, snorlax]
+  temperature: 1.0
+  top_k: 0
+  cfg_scale: 1.0
+
+loss:
+  recon_loss_type: l2
+  perceptual_weight: 1.0
+  codebook_weight: 1.0
+  disc_weight: 1.0
+  disc_loss: hinge
+  lpips_net: vgg
+  gan_eta: 0.05
+
+train:
+  device: cuda
+  amp: bf16
+  batch_size: 8                   # smaller: tokenizer + 0.6B CAR + APR decode share one GPU
+  grad_accum: 4                   # effective batch 32
+  epochs: 300
+  lr: 1.0e-4                      # tokenizer lr
+  car_lr: 5.0e-5                  # CAR (Qwen) lr, lower than the fresh tokenizer head
+  beta1: 0.5
+  beta2: 0.9
+  weight_decay: 1.0e-4
+  warmup_steps: 2000
+  grad_clip: 1.0
+  disc_start_step: 2000           # GAN turn-on (tokenizer fidelity)
+  ar_start_step: 0                # PURE EOSTok: NTP+APR joint from step 0 (no warmup), per paper
+  lambda_ntp: 0.1                 # EOSTok Table 9 (was wrongly 1.0)
+  lambda_apr: 1.0                 # EOSTok L_APR weight (the generative-feedback keystone; ablation-best)
+  apr_lpips_weight: 1.0           # EOSTok: L_APR = L2 + LPIPS (was 0.0 — now faithful)
+  lambda_sem: 1.0                 # EOSTok L_implicit (DINOv2 alignment) weight, Table 9. 0 disables.
+  nested_dropout_prob: 0.25
+  log_every: 50
+  sample_every: 500
+  ckpt_every: 1000
+  num_workers: 8
+  seed: 0
+
+wandb:
+  enabled: true
+  project: cvq-pokemon
+  entity: null
+  name: e2e-eostok-car-cosine-cb16384
+  mode: online
+
+out:
+  ckpt_dir: checkpoints_e2e
+  sample_dir: samples_e2e
