@@ -17,10 +17,23 @@ class PokemonDataset(Dataset):
     produces, so the same tensor serves as encoder input and reconstruction target.
     """
 
-    def __init__(self, root: str | Path, size: int = 256, hflip: bool = True):
+    def __init__(self, root: str | Path, size: int = 256, hflip: bool = True,
+                 augment: bool = False):
         self.root = Path(root)
         self.size = size
         self.hflip = hflip
+        self.augment = augment
+        # Heavy augmentation for tiny datasets (~1.3k imgs): mild because Pokemon are centered
+        # subjects on light backgrounds. White fill on rotate/crop so we never teach dark borders.
+        self._aug = None
+        if augment:
+            from torchvision import transforms as T
+            self._aug = T.Compose([
+                T.RandomResizedCrop(size, scale=(0.8, 1.0), ratio=(0.9, 1.1),
+                                    interpolation=T.InterpolationMode.BICUBIC),
+                T.RandomRotation(15, interpolation=T.InterpolationMode.BILINEAR, fill=255),
+                T.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.05),
+            ])
         self.img_dir = self.root / f"images_{size}"
         manifest = self.root / "manifest.jsonl"
         if not manifest.exists():
@@ -41,6 +54,8 @@ class PokemonDataset(Dataset):
         img = Image.open(self.img_dir / rec["file"]).convert("RGB")
         if img.size != (self.size, self.size):
             img = img.resize((self.size, self.size), Image.LANCZOS)
+        if self._aug is not None:
+            img = self._aug(img)                           # PIL->PIL, keeps (size,size)
         x = torch.from_numpy(_to_float_chw(img))           # (3,H,W) in [0,1]
         if self.hflip and torch.rand(()) < 0.5:
             x = torch.flip(x, dims=[2])
