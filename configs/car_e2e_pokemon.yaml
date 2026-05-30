@@ -76,8 +76,7 @@ train:
   log_every: 50
   sample_every: 500
   ckpt_every: 1000
-  num_workers: 2                  # box has only 31GB host RAM; 8 workers OOM-killed the run
-                                  # (tokenizer+Qwen+DINOv2+LPIPS in parent, each worker COW-copies)
+  num_workers: 4
   seed: 0
 
 wandb:
