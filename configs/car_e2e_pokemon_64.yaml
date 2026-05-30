@@ -1,0 +1,89 @@
+# END-TO-END EOSTok x CAR @ 64x64 — FAST-ITERATION config.
+#
+# Same objective as car_e2e_pokemon.yaml (256px):
+#     L_E2E = L_VQVAE + lambda_NTP * L_NTP + lambda_APR * L_APR + lambda_sem * L_implicit
+# Only the PIXEL resolution changes (256 -> 64). The latent grid is held at 16x16 by dropping
+# the encoder/decoder downsample factor f from 16 to 4 (enc_ch_mult length 5 -> 3). So:
+#   * codebook geometry is UNCHANGED  (token_dim = g*g = 16*16 = 256)
+#   * CAR sequence length is UNCHANGED (latent_channels = 256 channel-tokens)
+#   * every EOSTok hyperparameter is UNCHANGED -> a fair, comparable run, just cheaper pixels.
+# What gets faster: encoder/decoder convs, LPIPS, GAN, APR re-decode (16x fewer pixels). The
+# Qwen-0.6B CAR cost is the SAME (it always sees 256 tokens) — this is the speed floor.
+# DINOv2-large still gets fed at 224px internally -> 16x16=256 patches == our grid (no interp).
+
+data:
+  root: data
+  size: 64
+  hflip: true
+
+model:
+  latent_channels: 256
+  codebook_size: 16384
+  commitment_beta: 0.25
+  quantizer_kwargs:
+    ibq_l2_norm: true
+    ibq_tau: 1.0
+    ibq_entropy_weight: 0.01
+    ibq_reg_weight: 1.0
+    ibq_entropy_temperature: 0.01
+  enc_ch: 128
+  enc_ch_mult: [1, 2, 4]          # 64 -> 16 (2 downsamples, f=4). grid stays 16x16.
+  decoder_ch: 128
+  decoder_ch_mult: [1, 2, 4]
+  decoder_res_blocks: 2
+  qwen_name: Qwen/Qwen3-0.6B
+  freeze_backbone: false
+  attn_impl: sdpa
+  dino_name: facebook/dinov2-large
+  max_text_len: 16
+  sample_prompts: [pikachu, charizard, bulbasaur, mewtwo, rayquaza mega, gengar, eevee, snorlax]
+  temperature: 1.0
+  top_k: 250            # K=16384; top_k=0 sampled the full 16k tail -> noise. 200-500 is the AR-image norm.
+  cfg_scale: 3.0        # classifier-free guidance (needs cond_dropout_prob>0 to be meaningful)
+
+loss:
+  recon_loss_type: l2
+  perceptual_weight: 1.0
+  codebook_weight: 1.0
+  disc_weight: 1.0
+  disc_loss: hinge
+  lpips_net: vgg
+  gan_eta: 0.05
+
+train:
+  device: cuda
+  amp: bf16
+  batch_size: 32                  # 64px frees a lot of pixel-side memory -> 4x batch vs 256 run
+  grad_accum: 1                   # effective batch 32 (same as 256 run's 8x4)
+  epochs: 300
+  lr: 1.0e-4
+  car_lr: 5.0e-5
+  beta1: 0.5
+  beta2: 0.9
+  weight_decay: 1.0e-4
+  warmup_steps: 2000
+  grad_clip: 1.0
+  disc_start_step: 2000
+  ar_start_step: 0
+  cond_dropout_prob: 0.1   # CFG: train p(image|"") on 10% of samples so cfg_scale>1 is meaningful
+  lambda_ntp: 0.1
+  lambda_apr: 1.0
+  apr_lpips_weight: 1.0
+  lambda_sem: 1.0
+  nested_dropout_prob: 0.25
+  log_every: 50
+  sample_every: 500
+  ckpt_every: 1000
+  num_workers: 4
+  seed: 0
+
+wandb:
+  enabled: true
+  project: cvq-pokemon
+  entity: null
+  name: e2e-eostok-car-qwen0.6b-64px-cfg
+  mode: online
+
+out:
+  ckpt_dir: checkpoints_e2e_64_cfg
+  sample_dir: samples_e2e_64_cfg

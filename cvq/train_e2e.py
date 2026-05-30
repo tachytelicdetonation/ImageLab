@@ -173,6 +173,19 @@ def main():
     ar_start = tcfg["ar_start_step"]
     apr_lpips_w = tcfg.get("apr_lpips_weight", 0.0)
 
+    # ---- classifier-free guidance: caption dropout ----
+    # With prob cond_drop, replace a sample's caption with the EMPTY string so the CAR learns
+    # p(image | "") — the unconditional distribution CFG interpolates against at sampling time.
+    # Without this, generate()'s uncond branch is untrained and CFG (cfg_scale>1) is meaningless.
+    # The empty tokenization here MUST match sample_generations()'s `text_tok([""]*n, ...)`.
+    cond_drop = tcfg.get("cond_dropout_prob", 0.0)
+    if cond_drop > 0:
+        _emp = text_tok([""], padding="max_length", truncation=True,
+                        max_length=mcfg.get("max_text_len", 16), return_tensors="pt")
+        empty_ids = _emp["input_ids"][0].to(device)      # (L,)
+        empty_mask = _emp["attention_mask"][0].to(device)  # (L,)
+        print(f"caption dropout: ON | p={cond_drop} (CFG-enabled)")
+
     ckpt_dir = Path(ocfg["ckpt_dir"]); ckpt_dir.mkdir(parents=True, exist_ok=True)
     sample_dir = Path(ocfg["sample_dir"]); sample_dir.mkdir(parents=True, exist_ok=True)
 
