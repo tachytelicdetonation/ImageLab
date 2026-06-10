@@ -1,4 +1,15 @@
-"""Pokemon image dataset backed by the manifest.jsonl produced by download_pokemon.py."""
+"""Generic manifest-backed image dataset.
+
+Any dataset becomes usable here by writing a directory of the form
+
+    <root>/images_<size>/<file>.png
+    <root>/manifest.jsonl      # one record per line:
+                               # {"file": ..., "name": ..., "caption": ...,
+                               #  "dataset": <optional source tag>}
+
+(`cvq/data/download_pokemon.py` produces this layout for Pokemon; an ImageNette+Woof
+builder produces it with `dataset` tags for per-source eval splits.)
+"""
 
 from __future__ import annotations
 
@@ -10,10 +21,10 @@ from PIL import Image
 from torch.utils.data import Dataset
 
 
-class PokemonDataset(Dataset):
+class ManifestImageDataset(Dataset):
     """Loads images and captions; returns pixels normalized to [-1, 1].
 
-    [-1, 1] is the range SigLIP expects (mean=std=0.5) and the range our tanh decoder
+    [-1, 1] is the range the encoder expects (mean=std=0.5) and the range our tanh decoder
     produces, so the same tensor serves as encoder input and reconstruction target.
     """
 
@@ -38,7 +49,8 @@ class PokemonDataset(Dataset):
         manifest = self.root / "manifest.jsonl"
         if not manifest.exists():
             raise FileNotFoundError(
-                f"{manifest} not found — run `python -m cvq.data.download_pokemon` first."
+                f"{manifest} not found — build the dataset first "
+                f"(e.g. `python -m cvq.data.download_pokemon`)."
             )
         self.records = [json.loads(l) for l in manifest.read_text().splitlines() if l.strip()]
         # Keep only records whose image actually exists at this resolution.
@@ -64,6 +76,10 @@ class PokemonDataset(Dataset):
         # can split easy-vs-hard grids/metrics. Absent for single-source sets (Pokemon) -> "all".
         return {"image": x, "caption": rec["caption"], "name": rec["name"],
                 "dataset": rec.get("dataset", "all")}
+
+
+# Back-compat alias (the class predates multi-dataset support).
+PokemonDataset = ManifestImageDataset
 
 
 def _to_float_chw(img: Image.Image):

@@ -1,3 +1,4 @@
+task: e2e
 # Fork B on combined ImageNette (easy) + ImageWoof (hard) @ 64px -- 20 classes, ~26k images.
 #
 # WHY this dataset: Pokemon was 1 image per unique name, so the AR could only memorize p(image),

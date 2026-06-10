@@ -1,3 +1,4 @@
+task: e2e
 # END-TO-END EOSTok x CAR: joint tokenizer + autoregressive text-to-image, trained together.
 # DINOv3 variant — patch-16 ViT-L/16 alignment instead of DINOv2's patch-14. Otherwise IDENTICAL
 # to car_e2e_pokemon.yaml (same four CVQxEOSTok couplings: channel-weighted NTP, APR prefix-

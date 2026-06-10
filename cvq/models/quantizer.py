@@ -35,12 +35,15 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from cvq.registry import register
+
 
 def _no_autocast(t: torch.Tensor):
     """Keep codebook distance/softmax math in fp32 even under bf16/fp16 autocast."""
     return torch.autocast(device_type="cuda", enabled=False) if t.is_cuda else nullcontext()
 
 
+@register("quantizer", "ibq")
 class IBQChannelVQ(nn.Module):
     """Channel-wise IBQ. Per CHANNEL-token (dim D=h*w), quantized against a shared codebook
     (K, D) -- K=16384, D=256 is IBQ's native default.

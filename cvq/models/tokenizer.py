@@ -1,20 +1,20 @@
 """
-CVQ tokenizer: trainable CNN encoder -> channel-wise IBQ -> trainable VQGAN decoder.
+CVQ tokenizer: encoder -> channel-wise quantizer -> decoder.
 
-  image (B,3,256,256) in [-1,1]
-     │  CNN encoder (VQGAN, from scratch) — f = 2^(len(enc_ch_mult)-1) = 16
+  image (B,3,H,W) in [-1,1]
+     │  encoder (registry "encoder", default: from-scratch VQGAN CNN) — f = 2^(len(enc_ch_mult)-1)
      ▼
-  z    (B, Ctok, 16, 16)          Ctok channel-tokens, each of dim 16*16=256
-     │  channel-wise IBQ (softmax-over-all-codes + index-backprop STE + nested dropout)
+  z    (B, Ctok, g, g)          Ctok channel-tokens, each of dim g*g
+     │  channel-wise quantizer (registry "quantizer": ibq | fsq | yours)
      ▼
-  z_q  (B, Ctok, 16, 16)
-     │  decoder (trainable, VQGAN)
+  z_q  (B, Ctok, g, g)
+     │  decoder (registry "decoder", default: VQGAN)
      ▼
-  recon (B,3,256,256) in [-1,1]
+  recon (B,3,H,W) in [-1,1]
 
-The encoder is a single swappable component. Today it is the from-scratch CNN (the paper's
-VQGAN setup, which beat the frozen-SigLIP semantic encoder on reconstruction — see RESULTS.md).
-A future semantic encoder (e.g. a LeJEPA-pretrained ViT, for the Phase-2 CAR) plugs in here.
+The tokenizer is pure composition: components are built by `cvq.factory.build_tokenizer`
+from the config's registry names and injected here. To try a new encoder/quantizer/decoder,
+register it (see cvq/registry.py) and name it in the YAML — this file does not change.
 """
 
 from __future__ import annotations
@@ -22,61 +22,16 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from .decoder import Decoder
-from .encoder_cnn import Encoder as CNNEncoder
-from .quantizer import IBQChannelVQ
-from .fsq import ChannelFSQ
-
 
 class CVQTokenizer(nn.Module):
-    def __init__(
-        self,
-        resolution: int = 256,
-        latent_channels: int = 256,     # number of channel-tokens (CAR sequence length)
-        codebook_size: int = 16384,
-        commitment_beta: float = 0.25,
-        quantizer_kwargs: dict | None = None,
-        quant_type: str = "ibq",
-        fsq_levels=None,
-        fsq_bits: int | None = None,
-        enc_ch: int = 128,
-        enc_ch_mult=(1, 1, 2, 2, 4),
-        decoder_ch: int = 128,
-        decoder_ch_mult=(1, 1, 2, 2, 4),
-        decoder_res_blocks: int = 2,
-    ):
+    def __init__(self, encoder: nn.Module, quantizer: nn.Module, decoder: nn.Module,
+                 latent_channels: int, grid: int):
         super().__init__()
-        # Trainable CNN encoder from scratch (paper's VQGAN setup). f = 2^(len-1).
-        g = resolution // (2 ** (len(enc_ch_mult) - 1))
-        self.encoder = CNNEncoder(
-            ch=enc_ch, ch_mult=tuple(enc_ch_mult), num_res_blocks=decoder_res_blocks,
-            z_channels=latent_channels, resolution=resolution, attn_resolutions=(g,),
-        )
-        token_dim = g * g
-
-        # Quantizer: channel-vector IBQ (Fork A, EOSTok-faithful) or channel-wise FSQ
-        # (Fork B / BAR — binary levels, parameter-free, bit-structured index for the MBM head).
-        if quant_type == "fsq":
-            levels = fsq_levels if fsq_levels else [2] * int(fsq_bits)
-            self.quantizer = ChannelFSQ(levels=levels, token_dim=token_dim)
-        else:
-            self.quantizer = IBQChannelVQ(
-                codebook_size=codebook_size,
-                token_dim=token_dim,
-                commitment_beta=commitment_beta,
-                **(quantizer_kwargs or {}),
-            )
-        self.decoder = Decoder(
-            ch=decoder_ch,
-            out_ch=3,
-            ch_mult=decoder_ch_mult,
-            num_res_blocks=decoder_res_blocks,
-            z_channels=latent_channels,
-            resolution=resolution,
-            attn_resolutions=(g,),
-        )
+        self.encoder = encoder
+        self.quantizer = quantizer
+        self.decoder = decoder
         self.latent_channels = latent_channels
-        self.grid = g
+        self.grid = grid
 
     # ---- encode / decode halves (used by CAR in phase 2) ----
     def encode(self, x):

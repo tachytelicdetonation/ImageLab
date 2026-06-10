@@ -1,3 +1,4 @@
+task: e2e
 # END-TO-END EOSTok x CAR: joint tokenizer + autoregressive text-to-image, trained together.
 #
 # This is EOSTok's objective (arXiv:2605.00503) on our channel-wise stack:

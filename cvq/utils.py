@@ -1,8 +1,23 @@
-"""Small shared helpers (device selection)."""
+"""Small shared helpers: device selection, image denorm, grad norms."""
 
 from __future__ import annotations
 
 import torch
+
+
+def denorm(x: torch.Tensor) -> torch.Tensor:
+    """[-1,1] model space -> [0,1] image space (for saving/metrics). Was copy-pasted as a
+    lambda in every trainer; this is the one definition."""
+    return x.clamp(-1, 1) * 0.5 + 0.5
+
+
+def grad_norm(params) -> float:
+    """L2 norm of gradients over an iterable of parameters."""
+    total = 0.0
+    for p in params:
+        if p.grad is not None:
+            total += float(p.grad.detach().float().norm() ** 2)
+    return total ** 0.5
 
 
 def resolve_device(name: str = "auto") -> str:

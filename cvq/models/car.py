@@ -97,15 +97,13 @@ class CAR(nn.Module):
         nn.init.normal_(self.boi, std=0.02)
         self.image_embed.to(backbone_dtype)
         self.boi.data = self.boi.data.to(backbone_dtype)
-        # Output head: flat K-way softmax (EOSTok/Fork A) or masked-bit modeling (BAR/Fork B).
-        if head_type == "mbm":
-            from .mbm_head import MBMHead
-            self.mbm = MBMHead(self.hidden, codebook_size, depth=mbm_depth,
-                               n_heads=mbm_heads, n_infer_steps=mbm_infer_steps)
-        else:
-            self.image_head = nn.Linear(self.hidden, codebook_size, bias=False)
-            nn.init.normal_(self.image_head.weight, std=0.02)
-            self.image_head.to(backbone_dtype)
+        # Output head from the registry: "softmax" (EOSTok/Fork A), "mbm" (BAR/Fork B), or
+        # any head registered under "ar_head" (see cvq/models/heads.py for the contract).
+        from cvq.registry import build
+        self.head = build("ar_head", head_type,
+                          hidden=self.hidden, codebook_size=codebook_size,
+                          backbone_dtype=backbone_dtype, mbm_depth=mbm_depth,
+                          mbm_heads=mbm_heads, mbm_infer_steps=mbm_infer_steps)
 
     # ------------------------------------------------------------------ #
     def _run_backbone(self, inputs_embeds, attention_mask, past_key_values=None, use_cache=False):
@@ -129,8 +127,8 @@ class CAR(nn.Module):
         return hidden
 
     def _logits(self, hidden):
-        """Image head in fp32 for stable cross-entropy / softmax."""
-        return self.image_head(hidden).float()
+        """Image head in fp32 for stable cross-entropy / softmax (softmax head only)."""
+        return self.head.logits(hidden)
 
     def _img_hidden(self, text_ids, text_mask, image_idxs):
         """Teacher-forced backbone pass -> (B, C, H) hidden states at image positions.
@@ -157,60 +155,25 @@ class CAR(nn.Module):
         return logits
 
     def ar_loss(self, text_ids, text_mask, image_idxs, channel_weights=None):
-        """Unified AR objective -> (loss, logs, aux).
+        """Unified AR objective -> (loss, logs, aux). Head-agnostic.
 
         softmax head: (optionally channel-weighted) NTP cross-entropy; aux={'logits': (B,C,K)}
                       so train_e2e can run the EOSTok APR soft-decode.
         mbm head:     masked-bit BCE over each channel-token's bits (BAR); aux={} (the soft
                       codebook APR is not defined for bit-prediction — disable lambda_apr)."""
-        B, C = image_idxs.shape
         img_hidden = self._img_hidden(text_ids, text_mask, image_idxs)    # (B, C, H)
-        if self.head_type == "mbm":
-            ctx = img_hidden.reshape(B * C, self.hidden).float()
-            tgt = image_idxs.reshape(B * C)
-            loss, hlogs = self.mbm(ctx, tgt)
-            with torch.no_grad():
-                tok_acc = self.mbm.exact_match(ctx, tgt)
-            logs = {"car/ntp_loss": loss.item(), "car/bit_acc": hlogs["bit_acc"],
-                    "car/token_acc": tok_acc.item()}
-            return loss, logs, {}
-        logits = self._logits(img_hidden)                                # (B, C, K) fp32
-        K = logits.shape[-1]
-        ce_pt = F.cross_entropy(logits.reshape(-1, K), image_idxs.reshape(-1),
-                                reduction="none").reshape(B, C)
-        if channel_weights is None:
-            loss = ce_pt.mean()
-        else:
-            loss = (ce_pt * channel_weights.to(ce_pt.device)[None, :]).mean()
-        with torch.no_grad():
-            acc = (logits.argmax(-1) == image_idxs).float().mean()
-            cprefix = max(1, C // 4)
-            acc_prefix = (logits[:, :cprefix].argmax(-1) ==
-                          image_idxs[:, :cprefix]).float().mean()
-        logs = {"car/ntp_loss": loss.item(), "car/token_acc": acc.item(),
-                "car/token_acc_prefix": acc_prefix.item()}
-        return loss, logs, {"logits": logits}
+        return self.head.loss(img_hidden, image_idxs, channel_weights)
 
     def loss(self, text_ids, text_mask, image_idxs, channel_weights: torch.Tensor | None = None):
-        """NTP cross-entropy over image channels (EOSTok's L_NTP).
+        """NTP loss over image channels (EOSTok's L_NTP) — `ar_loss` without the aux dict.
 
         If `channel_weights` is given (shape (C,), mean=1), the per-channel CE is reweighted
         so early (coarse) channels are penalized more -- the formal coupling between CVQ's
         coarse-to-fine channel ordering and EOSTok's flat NTP loss. mean(w)=1 keeps the
         overall scale equal to the unweighted loss.
         """
-        logits = self(text_ids, text_mask, image_idxs)            # (B, C, K) fp32
-        B, C, K = logits.shape
-        ce_pt = F.cross_entropy(
-            logits.reshape(-1, K), image_idxs.reshape(-1), reduction="none",
-        ).reshape(B, C)
-        if channel_weights is None:
-            loss = ce_pt.mean()
-        else:
-            loss = (ce_pt * channel_weights.to(ce_pt.device)[None, :]).mean()
-        with torch.no_grad():
-            acc = (logits.argmax(-1) == image_idxs).float().mean()
-        return loss, {"car/ntp_loss": loss.item(), "car/token_acc": acc.item()}
+        loss, logs, _ = self.ar_loss(text_ids, text_mask, image_idxs, channel_weights)
+        return loss, logs
 
     # ------------------------------------------------------------------ #
     @torch.no_grad()
@@ -236,30 +199,13 @@ class CAR(nn.Module):
             uncond_text_ids, uncond_text_mask,
         )
 
-    def _sample_one(self, logits, temperature, top_k):
-        logits = logits / max(temperature, 1e-6)
-        if top_k > 0:
-            v, _ = torch.topk(logits, top_k, dim=-1)
-            logits = logits.masked_fill(logits < v[:, [-1]], -float("inf"))
-        return torch.multinomial(logits.softmax(-1), 1)
-
     def _sample_step(self, last_h, u_last_h, temperature, top_k, cfg_scale, do_cfg):
         """Sample one channel-token index (B,1) from the current hidden state(s).
 
-        softmax: K-way (optionally CFG-mixed, top-k) sampling. mbm: iterative masked-bit
-        refinement via the MBM head (CFG mixes bit logits inside the head)."""
-        if self.head_type == "mbm":
-            if do_cfg:
-                idx = self.mbm.generate_cfg(last_h.float(), u_last_h.float(),
-                                            cfg_scale, temperature)
-            else:
-                idx = self.mbm.generate(last_h.float(), temperature)
-            return idx.unsqueeze(1)
-        logits = self._logits(last_h)
-        if do_cfg:
-            ulogits = self._logits(u_last_h)
-            logits = ulogits + cfg_scale * (logits - ulogits)
-        return self._sample_one(logits, temperature, top_k)
+        Delegates to the registered head: K-way (optionally CFG-mixed, top-k) sampling for
+        softmax; iterative masked-bit refinement for mbm (CFG mixes bit logits inside)."""
+        return self.head.sample(last_h, u_last_h, temperature=temperature, top_k=top_k,
+                                cfg_scale=cfg_scale, do_cfg=do_cfg)
 
     @torch.no_grad()
     def _generate_cached(self, text_ids, text_mask, temperature, top_k, cfg_scale,
@@ -338,3 +284,16 @@ class CAR(nn.Module):
 
     def trainable_parameters(self):
         return [p for p in self.parameters() if p.requires_grad]
+
+    def load_state_dict(self, state_dict, strict: bool = True, assign: bool = False):
+        """Accepts checkpoints from before the head registry: `image_head.*` (softmax) and
+        `mbm.*` (MBM) keys are remapped to their new home under `head.`."""
+        remap = {}
+        for k, v in state_dict.items():
+            if k.startswith("image_head."):
+                remap["head.proj." + k[len("image_head."):]] = v
+            elif k.startswith("mbm."):
+                remap["head." + k] = v
+            else:
+                remap[k] = v
+        return super().load_state_dict(remap, strict=strict, assign=assign)

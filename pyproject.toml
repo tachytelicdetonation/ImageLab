@@ -25,6 +25,9 @@ dependencies = [
     "torchmetrics>=1.4.0",       # rFID, PSNR, SSIM
 ]
 
+[dependency-groups]
+dev = ["pytest>=8.0"]
+
 [tool.uv]
 # Keep the resolver from pulling CUDA-only builds; the default PyPI wheels are MPS-capable on arm64 macOS.
 

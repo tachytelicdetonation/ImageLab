@@ -1,3 +1,4 @@
+task: e2e
 # EOSTok x channel-vector CAR @ 64px — FAST-ITERATION (~18-20 min) run.
 #
 # SAME METHOD as car_e2e_pokemon_64.yaml — fully EOSTok-faithful, K=16384 (NOT reduced),

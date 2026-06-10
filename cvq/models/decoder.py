@@ -15,6 +15,8 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from cvq.registry import register
+
 
 def nonlinearity(x):
     return F.silu(x)
@@ -87,6 +89,7 @@ class AttnBlock(nn.Module):
         return x + self.proj_out(out)
 
 
+@register("decoder", "vqgan")
 class Decoder(nn.Module):
     """Latent grid -> image. Faithful taming-transformers decoder structure."""
 

@@ -18,16 +18,16 @@ import torch
 from torch.utils.data import DataLoader
 from torchvision.utils import make_grid, save_image
 
-from cvq.data.dataset import PokemonDataset
-from cvq.tokenizer_factory import build_tokenizer
-from cvq.utils import resolve_device
+from cvq.data.dataset import ManifestImageDataset
+from cvq.factory import build_tokenizer
+from cvq.utils import denorm, resolve_device
 
 
 def build_from_ckpt(ckpt_path: str, device: str):
-    """Back-compat wrapper around cvq.tokenizer_factory.build_tokenizer.
+    """Back-compat wrapper around cvq.factory.build_tokenizer.
 
-    Kept because external callers (train_car.py and downstream scripts) import this
-    name. The factory is the single source of truth for tokenizer construction."""
+    Kept because external callers import this name. The factory is the single source of
+    truth for tokenizer construction."""
     tok, cfg = build_tokenizer({}, device, ckpt=ckpt_path)
     tok.eval()
     return tok, cfg
@@ -44,14 +44,13 @@ def main():
     device = resolve_device(args.device)
 
     tok, cfg = build_from_ckpt(args.ckpt, device)
-    ds = PokemonDataset(cfg["data"]["root"], size=cfg["data"]["size"], hflip=False)
+    ds = ManifestImageDataset(cfg["data"]["root"], size=cfg["data"]["size"], hflip=False)
     dl = DataLoader(ds, batch_size=args.n, shuffle=True)
     batch = next(iter(dl))
     x = batch["image"].to(device)
 
     out = tok(x)
     recon = out["recon"]
-    denorm = lambda t: (t.clamp(-1, 1) * 0.5 + 0.5)
     outdir = Path(args.out); outdir.mkdir(parents=True, exist_ok=True)
 
     grid = make_grid(torch.cat([denorm(x), denorm(recon)], 0), nrow=args.n)

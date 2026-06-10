@@ -15,6 +15,8 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from cvq.registry import register
+
 from .decoder import AttnBlock, Normalize, ResnetBlock, nonlinearity
 
 
@@ -33,6 +35,7 @@ class Downsample(nn.Module):
         return F.avg_pool2d(x, kernel_size=2, stride=2)
 
 
+@register("encoder", "cnn")
 class Encoder(nn.Module):
     def __init__(
         self,

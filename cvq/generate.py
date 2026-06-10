@@ -15,10 +15,10 @@ import torch
 from torchvision.utils import make_grid, save_image
 
 from cvq.checkpoint import CheckpointStore
-from cvq.conditioning import Conditioning
-from cvq.models.car import CAR
-from cvq.tokenizer_factory import build_tokenizer
-from cvq.utils import resolve_device
+from cvq.config import ModelConfig, _section
+from cvq.factory import (build_car, build_conditioning, build_text_tokenizer,
+                         build_tokenizer)
+from cvq.utils import denorm, resolve_device
 
 
 @torch.no_grad()
@@ -38,15 +38,12 @@ def main():
     tok, _ = build_tokenizer({}, device, ckpt=args.tokenizer_ckpt)
     tok.eval()
     ck = CheckpointStore.load(args.car_ckpt, map_location=device)
-    cfg = ck["config"]["model"]
-    from transformers import AutoTokenizer
-    qwen_name = cfg.get("qwen_name", "Qwen/Qwen3-0.6B-Base")
-    text_tok = AutoTokenizer.from_pretrained(qwen_name)
-    car = CAR(codebook_size=tok.quantizer.codebook_size, num_channels=tok.latent_channels,
-              qwen_name=qwen_name).to(device)
+    m = _section(ModelConfig, "model", ck["config"].get("model"), [])
+    text_tok = build_text_tokenizer(m)
+    car = build_car(m, tok.quantizer.codebook_size, tok.latent_channels, device)
     car.load_state_dict(ck["car"]); car.eval()
 
-    cond = Conditioning(text_tok, max_len=cfg.get("max_text_len", 16), device=device)
+    cond = build_conditioning(m, text_tok, device=device)
     prompts = [p.replace("-", " ") for p in args.prompts]
     text_ids, text_mask = cond.encode_batch(prompts)
     text_ids = text_ids.to(device); text_mask = text_mask.to(device)
@@ -58,7 +55,7 @@ def main():
                         cfg_scale=args.cfg, uncond_text_ids=uncond_ids,
                         uncond_text_mask=uncond_mask)
     imgs = tok.decode(tok.quantizer.lookup(idxs))
-    grid = make_grid((imgs.clamp(-1, 1) * 0.5 + 0.5), nrow=len(prompts))
+    grid = make_grid(denorm(imgs), nrow=len(prompts))
     out = Path(args.out); out.parent.mkdir(parents=True, exist_ok=True)
     save_image(grid, out)
     print(f"saved {len(prompts)} generations -> {out}")

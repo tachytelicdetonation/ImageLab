@@ -1,3 +1,4 @@
+task: e2e
 # Fork B — CVQ x FSQ x BAR @ 64px ("Bit-CAR" / channel-FSQ-AR).
 #
 # NOT EOSTok-faithful by design: this swaps the discretizer and the AR head to attack the

@@ -1,3 +1,4 @@
+task: tokenizer
 # CVQ tokenizer — EOSTok-FAITHFUL channel-wise IBQ (cosine variant).
 #
 # This is the one place EOSTok (arXiv:2605.00503) diverges from the original IBQ paper
@@ -21,11 +22,9 @@ data:
   hflip: true
 
 model:
-  resolution: 256
   latent_channels: 256
   codebook_size: 4096          # EOSTok default (it also tested {1024,2048,8192,16384})
   commitment_beta: 0.25
-  quantizer_type: ibq          # ignored (single quantizer); kept for provenance
   quantizer_kwargs:
     ibq_l2_norm: true             # EOSTok Eq.7 — l2-normalize latent + codebook for the similarity (COSINE)
     ibq_tau: 1.0                  # EOSTok keeps tau=1 on the quant softmax
@@ -54,7 +53,6 @@ train:
   grad_accum: 2
   epochs: 100
   lr: 1.0e-4
-  encoder_lr: 1.0e-4
   beta1: 0.5
   beta2: 0.9
   weight_decay: 1.0e-4

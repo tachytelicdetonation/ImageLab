@@ -243,7 +243,7 @@ class TrainLoop:
         disc optimizer (the LAST entry, if disc_params is given) which is gated by
         disc_start_step — matches the original behaviour in train.py / train_e2e.py.
         """
-        from cvq.metrics import grad_norm
+        from cvq.utils import grad_norm
 
         step = start_step
         t0 = time.time()

@@ -1,3 +1,4 @@
+task: car
 # CAR — channel-wise autoregressive text-to-image, Qwen3-0.6B backbone, on a FROZEN
 # EOSTok tokenizer (K=4096). Baseline: EOSTok's NTP objective only (APR + tokenizer
 # unfreeze come next). Pass --tokenizer_ckpt to point at the trained tokenizer.

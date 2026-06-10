@@ -1,3 +1,4 @@
+task: tokenizer
 # CVQ tokenizer — literal baseline + channel-wise IBQ quantizer.
 # The EOSTok (arXiv:2605.00503) x CVQ synthesis: EOSTok's discretizer is IBQ
 # (arXiv:2412.02692) = softmax-over-ALL-codes + straight-through + cosine-l2 logits +
@@ -13,11 +14,9 @@ data:
   hflip: true
 
 model:
-  resolution: 256
   latent_channels: 256
   codebook_size: 16384       # IBQ native default; Table 6 notes K=4096 generates better (phase-2 concern)
   commitment_beta: 0.25
-  quantizer_type: ibq
   quantizer_kwargs:
     ibq_entropy_weight: 0.05      # matches official imagenet_ibqgan_16384.yaml (0.05; 0.1 is the code default)
     ibq_tau: 1.0                  # quant softmax temperature; official uses raw logits (=1.0)
@@ -49,7 +48,6 @@ train:
   grad_accum: 2
   epochs: 100
   lr: 1.0e-4
-  encoder_lr: 1.0e-4
   beta1: 0.5
   beta2: 0.9
   weight_decay: 1.0e-4

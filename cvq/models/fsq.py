@@ -26,12 +26,15 @@ from contextlib import nullcontext
 import torch
 from torch import nn
 
+from cvq.registry import register
+
 
 def _no_autocast(t: torch.Tensor):
     """Keep the bound/round/index math in fp32 even under bf16/fp16 autocast."""
     return torch.autocast(device_type="cuda", enabled=False) if t.is_cuda else nullcontext()
 
 
+@register("quantizer", "fsq")
 class ChannelFSQ(nn.Module):
     """Channel-wise FSQ. Per channel-token (dim D=h*w), project to len(levels) scalars,
     scalar-quantize each to its level count, project back. |C| = prod(levels)."""
