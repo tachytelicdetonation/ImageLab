@@ -60,7 +60,10 @@ class PokemonDataset(Dataset):
         if self.hflip and torch.rand(()) < 0.5:
             x = torch.flip(x, dims=[2])
         x = x * 2.0 - 1.0                                   # -> [-1,1]
-        return {"image": x, "caption": rec["caption"], "name": rec["name"]}
+        # `dataset` tags which source a record came from (e.g. imagenette|imagewoof) so eval
+        # can split easy-vs-hard grids/metrics. Absent for single-source sets (Pokemon) -> "all".
+        return {"image": x, "caption": rec["caption"], "name": rec["name"],
+                "dataset": rec.get("dataset", "all")}
 
 
 def _to_float_chw(img: Image.Image):

@@ -76,6 +76,18 @@ class CAR(nn.Module):
             for p in self.backbone.parameters():
                 p.requires_grad_(False)
         self.freeze_backbone = freeze_backbone
+        # Gradient checkpointing: recompute backbone activations in backward instead of
+        # storing them. ~5-10x less activation memory for a ~20-30% compute hit -- this is
+        # what lets a large batch fit the 40GB A100 (backbone activations dominate, scale
+        # linearly with batch). use_reentrant=False is the modern, autograd-correct path;
+        # inputs_embeds carry grad (trainable text/image embeds) so it composes cleanly.
+        if not freeze_backbone:
+            try:
+                self.backbone.gradient_checkpointing_enable(
+                    gradient_checkpointing_kwargs={"use_reentrant": False}
+                )
+            except Exception as e:  # noqa: BLE001 - non-fatal; just lose the memory saving
+                print(f"[CAR] gradient_checkpointing_enable failed ({e}); continuing without it")
 
         # ---- image modality: embedding, begin-of-image marker, output head ----
         # Match the backbone dtype so concatenated embeddings are homogeneous.

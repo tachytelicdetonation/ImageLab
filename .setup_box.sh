@@ -11,7 +11,7 @@ echo "py: $(which python) $(python --version)"
 echo "=== install torch (cu130) ==="
 uv pip install --index-url https://download.pytorch.org/whl/cu130 torch torchvision 2>&1 | tail -5
 echo "=== install project deps ==="
-uv pip install transformers lpips pillow "numpy>=1.26,<2.3" requests tqdm pyyaml einops tensorboard wandb torchmetrics 2>&1 | tail -5
+uv pip install "transformers>=4.52.4" accelerate lpips pillow "numpy>=1.26,<2.3" requests tqdm pyyaml einops tensorboard wandb torchmetrics 2>&1 | tail -5
 echo "=== verify ==="
 python -c "import torch;print('TORCH',torch.__version__,'cuda',torch.cuda.is_available());print('DEV',torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NONE')" 2>&1 | tail -4
 python -c "import transformers,torchvision,lpips,wandb,einops,torchmetrics;print('DEPS_OK',transformers.__version__,torchvision.__version__)" 2>&1 | tail -2

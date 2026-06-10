@@ -55,7 +55,7 @@ loss:
 train:
   device: cuda
   amp: bf16
-  batch_size: 16                  # MBM head runs on B*C tokens/step; 16*256=4096 -> keep modest
+  batch_size: 32                  # A100-40GB: bs16 AR-on ~19GB; ~9GB fixed + ~0.6GB/sample -> bs32 ~29GB (bs48 OOM'd at ~39GB)
   grad_accum: 1
   epochs: 50
   lr: 1.0e-4

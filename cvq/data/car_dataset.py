@@ -34,7 +34,15 @@ class CARPokemonDataset(Dataset):
 
     def __getitem__(self, idx):
         rec = self.base[idx]
-        return {"image": rec["image"], "prompt": prettify_name(rec["name"])}
+        # Prefer an explicit caption (e.g. "a photo of a golden retriever") when the manifest
+        # provides one richer than the bare name; fall back to the prettified name. For Pokemon
+        # caption == name so behaviour is unchanged; for ImageNette/woof this gives the AR a
+        # CLIP-style template with grounded class words instead of a lone token.
+        cap = rec.get("caption", "").strip()
+        name = prettify_name(rec["name"])
+        prompt = cap if (cap and cap != rec["name"]) else name
+        return {"image": rec["image"], "prompt": prompt,
+                "dataset": rec.get("dataset", "all")}
 
 
 class CARCollate:
@@ -58,4 +66,5 @@ class CARCollate:
             "text_ids": enc["input_ids"],
             "text_mask": enc["attention_mask"],
             "prompts": prompts,
+            "datasets": [b.get("dataset", "all") for b in batch],
         }

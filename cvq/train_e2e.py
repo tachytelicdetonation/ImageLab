@@ -165,6 +165,26 @@ def main():
     accum = tcfg.get("grad_accum", 1)
     fixed_batch = next(iter(DataLoader(ds, batch_size=8)))["image"][:8].to(device)
 
+    # ---- per-dataset eval split (easy-vs-hard): fixed recon batches + prompt groups ----
+    # Group the dataset by its `dataset` tag so we can report recon/AR metrics and gen grids
+    # separately for, e.g., imagenette (easy) vs imagewoof (hard) AND combined. Single-source
+    # sets (Pokemon) collapse to one "all" group, so behaviour there is unchanged.
+    from collections import OrderedDict, defaultdict
+    base_records = ds.base.records if hasattr(ds, "base") else ds.records
+    _tag_idxs = defaultdict(list)
+    for _i, _r in enumerate(base_records):
+        _tag_idxs[_r.get("dataset", "all")].append(_i)
+    n_eval = 8
+    eval_batches = OrderedDict()
+    for _tag in sorted(_tag_idxs):
+        _idxs = _tag_idxs[_tag][:n_eval]
+        _sub = torch.utils.data.Subset(ds, _idxs)
+        eval_batches[_tag] = next(iter(DataLoader(_sub, batch_size=len(_idxs), collate_fn=collate)))
+    multi_ds = len(eval_batches) > 1
+    # Prompt groups for generation: explicit per-dataset lists if given, else the flat list.
+    prompts_by_ds = mcfg.get("sample_prompts_by_dataset", None) or {"all": sample_prompts}
+    print(f"eval split: {len(eval_batches)} group(s) -> {list(eval_batches.keys())}")
+
     # ---- resume ----
     start_step = 0
     if args.resume and Path(args.resume).exists():
@@ -249,18 +269,54 @@ def main():
     def sample_fn(step):
         tok.eval(); car.eval()
         imgs_out = {}
+        eval_metrics = {}
+        ar_on_eval = step >= ar_start
+        # per-group accumulators for the combined ("all") roll-up across groups
+        agg = {"recon_l2": [], "lpips": [], "token_acc": [], "bit_acc": []}
         with torch.no_grad():
-            r = tok(fixed_batch)["recon"]
-        recon_grid = make_grid(torch.cat([denorm(fixed_batch), denorm(r)], 0), nrow=8)
-        save_image(recon_grid, sample_dir / f"recon_{step:06d}.png")
-        imgs_out["reconstructions"] = recon_grid
-        if step >= ar_start:
-            gen_grid = sample_generations(
-                car, tok, cond, sample_prompts, device, amp, sample_dir, step, denorm,
-                mcfg.get("cfg_scale", 1.0), mcfg.get("temperature", 1.0), mcfg.get("top_k", 0),
-            )
-            if gen_grid is not None:
-                imgs_out["generations"] = gen_grid
+            # ---- reconstructions + recon/AR metrics, per dataset group ----
+            for tag, b in eval_batches.items():
+                x_e = b["image"].to(device)
+                out_e = tok(x_e)
+                r = out_e["recon"]
+                grid = make_grid(torch.cat([denorm(x_e), denorm(r)], 0), nrow=x_e.shape[0])
+                gtag = tag if multi_ds else "all"
+                save_image(grid, sample_dir / f"recon_{gtag}_{step:06d}.png")
+                imgs_out[f"reconstructions/{gtag}"] = grid
+                rl2 = torch.nn.functional.mse_loss(r, x_e).item()
+                lp = crit.perceptual(r, x_e).mean().item()
+                eval_metrics[f"eval/{gtag}/recon_l2"] = rl2
+                eval_metrics[f"eval/{gtag}/lpips"] = lp
+                agg["recon_l2"].append(rl2); agg["lpips"].append(lp)
+                if ar_on_eval:
+                    idxs_e = out_e["indices"]
+                    _, logs_e, _ = car.ar_loss(b["text_ids"].to(device),
+                                               b["text_mask"].to(device), idxs_e)
+                    ta = logs_e.get("car/token_acc", 0.0)
+                    eval_metrics[f"eval/{gtag}/token_acc"] = ta
+                    agg["token_acc"].append(ta)
+                    if "car/bit_acc" in logs_e:
+                        ba = logs_e["car/bit_acc"]
+                        eval_metrics[f"eval/{gtag}/bit_acc"] = ba
+                        agg["bit_acc"].append(ba)
+            # ---- combined roll-up across groups (only meaningful when >1 group) ----
+            if multi_ds:
+                for k, vals in agg.items():
+                    if vals:
+                        eval_metrics[f"eval/combined/{k}"] = sum(vals) / len(vals)
+            # ---- generations, per prompt group ----
+            if ar_on_eval:
+                for tag, prompts in prompts_by_ds.items():
+                    gtag = tag if (multi_ds or tag != "all") else "all"
+                    gen_grid = sample_generations(
+                        car, tok, cond, prompts, device, amp, sample_dir, step, denorm,
+                        mcfg.get("cfg_scale", 1.0), mcfg.get("temperature", 1.0),
+                        mcfg.get("top_k", 0), tag=gtag,
+                    )
+                    if gen_grid is not None:
+                        imgs_out[f"generations/{gtag}"] = gen_grid
+        if eval_metrics:
+            logger.log(eval_metrics, step)
         tok.train(); car.train()
         return imgs_out
 
@@ -300,7 +356,7 @@ def main():
 
 @torch.no_grad()
 def sample_generations(car, tok, cond: Conditioning, prompts, device, amp, sample_dir, step,
-                       denorm, cfg_scale, temperature, top_k):
+                       denorm, cfg_scale, temperature, top_k, tag="all"):
     text_ids, text_mask = cond.encode_batch(prompts)
     text_ids = text_ids.to(device); text_mask = text_mask.to(device)
     uncond_ids = uncond_mask = None
@@ -312,8 +368,8 @@ def sample_generations(car, tok, cond: Conditioning, prompts, device, amp, sampl
                             uncond_text_mask=uncond_mask)
         imgs = tok.decode(tok.quantizer.lookup(idxs))
     grid = make_grid(denorm(imgs).float().cpu(), nrow=len(prompts))
-    save_image(grid, sample_dir / f"gen_{step:06d}.png")
-    print(f"  sampled {len(prompts)} prompts -> gen_{step:06d}.png")
+    save_image(grid, sample_dir / f"gen_{tag}_{step:06d}.png")
+    print(f"  sampled {len(prompts)} '{tag}' prompts -> gen_{tag}_{step:06d}.png")
     return grid
 
 
