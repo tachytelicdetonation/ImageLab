@@ -43,7 +43,7 @@ def _no_autocast(t: torch.Tensor):
     return torch.autocast(device_type="cuda", enabled=False) if t.is_cuda else nullcontext()
 
 
-@register("quantizer", "ibq")
+@register("quantizer", "ibq", paper="arXiv:2412.02692")
 class IBQChannelVQ(nn.Module):
     """Channel-wise IBQ. Per CHANNEL-token (dim D=h*w), quantized against a shared codebook
     (K, D) -- K=16384, D=256 is IBQ's native default.

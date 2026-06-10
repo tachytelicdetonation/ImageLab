@@ -43,6 +43,10 @@ class DataConfig:
     size: int = 256
     hflip: bool = True
     augment: bool = False
+    # Held-out fraction for records without an explicit manifest `split` field
+    # (filename-hash assignment — stable across runs/machines). 0 disables the split:
+    # training AND eval both see everything, i.e. the historical (pre-split) behavior.
+    val_fraction: float = 0.1
 
 
 @dataclass
@@ -127,6 +131,8 @@ class TrainConfig:
     channel_weight_schedule: str = "uniform"
     channel_weight_alpha: float = 1.0
     cond_dropout_prob: float = 0.0
+    # ---- sanity tiers ----
+    overfit_n: int = 0                     # >0: clamp the dataset to its first N images
     # ---- cadence / bookkeeping ----
     log_every: int = 50
     sample_every: int = 500
@@ -281,6 +287,15 @@ def validate(rc: RunConfig) -> list[str]:
     if m.head_type == "mbm" and t.channel_weight_schedule != "uniform":
         warnings.append("channel_weight_schedule is ignored by the MBM head "
                         "(weights only apply to softmax NTP)")
+
+    # ---- data split sanity ----
+    if not 0 <= d.val_fraction < 1:
+        raise ConfigError(f"data.val_fraction={d.val_fraction} must be in [0, 1)")
+    if d.val_fraction == 0:
+        warnings.append("data.val_fraction=0: eval metrics will be computed on TRAINING "
+                        "images — fine for parity with old runs, not for comparisons")
+    if t.overfit_n < 0:
+        raise ConfigError(f"train.overfit_n={t.overfit_n} must be >= 0")
 
     # ---- CFG sanity ----
     if m.cfg_scale != 1.0 and t.cond_dropout_prob <= 0:

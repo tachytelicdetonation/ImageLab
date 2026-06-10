@@ -1,0 +1,70 @@
+task: tokenizer
+# BLESSED BASE CONFIG — CVQ tokenizer (Fork A: IBQ) on ImageNette @ 64px.
+#
+#   python -m cvq.data.download_imagenette --size 64        # once (~100MB, Apache-2.0)
+#   lab run configs/tok_inet_64.yaml --tier smoke           # does it execute?  (~30s)
+#   lab run configs/tok_inet_64.yaml --tier overfit         # can it learn?     (~min)
+#   lab run configs/tok_inet_64.yaml --tier fast            # vs baseline?      (2k steps)
+#   lab run configs/tok_inet_64.yaml                        # the full run
+#
+# Experiments are deltas on this file, e.g.:
+#   lab run configs/tok_inet_64.yaml --set model.quant_type=lfq --tier fast
+#
+# No `out:` section -> checkpoints/samples land in the run's own folder under runs/.
+# 64px with f=4 gives grid 16x16 -> token_dim 256, IBQ's native dim.
+
+data:
+  root: data/imagenette
+  size: 64
+  hflip: true
+  val_fraction: 0.1            # ImageNette ships an official split; this covers
+                               # records without one (e.g. your own datasets)
+
+model:
+  latent_channels: 256
+  codebook_size: 16384
+  commitment_beta: 0.25
+  quant_type: ibq
+  quantizer_kwargs:
+    ibq_entropy_weight: 0.05
+    ibq_tau: 1.0
+    ibq_l2_norm: false
+    ibq_reg_weight: 1.0
+    ibq_entropy_temperature: 0.01
+  enc_ch: 128
+  enc_ch_mult: [1, 2, 4]       # 64 -> 16 (f=4)
+  decoder_ch: 128
+  decoder_ch_mult: [1, 2, 4]
+  decoder_res_blocks: 2
+
+loss:
+  recon_loss_type: l2
+  perceptual_weight: 1.0
+  codebook_weight: 1.0
+  disc_weight: 1.0
+  disc_loss: hinge
+  lpips_net: vgg
+  gan_eta: 0.05
+
+train:
+  device: auto
+  batch_size: 32
+  grad_accum: 1
+  epochs: 30
+  lr: 1.0e-4
+  beta1: 0.5
+  beta2: 0.9
+  weight_decay: 1.0e-4
+  warmup_steps: 1000
+  disc_start_step: 2000
+  nested_dropout_prob: 0.25
+  log_every: 50
+  sample_every: 500
+  ckpt_every: 1000
+  val_every: 1000
+  val_fid: true
+  num_workers: 4
+  seed: 0
+
+wandb:
+  enabled: false               # runs/<id>/metrics.jsonl is the source of truth

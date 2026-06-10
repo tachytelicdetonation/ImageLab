@@ -14,6 +14,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from cvq.data.car_dataset import CaptionedImageDataset, CARCollate
+from cvq.data.dataset import OverfitDataset
 from cvq.eval.evaluator import sample_generations
 from cvq.factory import (build_car, build_conditioning, build_text_tokenizer,
                          build_tokenizer)
@@ -29,7 +30,7 @@ def cosine_lr_lambda(step, warmup, total):
     return 0.5 * (1 + math.cos(math.pi * min(1.0, prog))) * (1 - 1e-3) + 1e-3
 
 
-@register("task", "car")
+@register("task", "car", paper="arXiv:2605.26089")
 class CARTask(Task):
     gan = False
     ckpt_prefix = "car"
@@ -58,7 +59,11 @@ class CARTask(Task):
 
         # ---- data (root/size come from the tokenizer's own training config) ----
         ds = CaptionedImageDataset(tok_cfg["data"]["root"], size=tok_cfg["data"]["size"],
-                                   hflip=t.hflip)
+                                   hflip=t.hflip,
+                                   split="train", val_fraction=rc.data.val_fraction)
+        if t.overfit_n:
+            ds = OverfitDataset(ds, t.overfit_n)
+            print(f"OVERFIT MODE: dataset clamped to {ds.n} image(s)")
         collate = CARCollate(text_tok, max_len=m.max_text_len)
         self.dataloader = DataLoader(ds, batch_size=t.batch_size, shuffle=True,
                                      num_workers=t.num_workers, drop_last=True,

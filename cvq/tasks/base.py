@@ -29,6 +29,9 @@ class Task:
         # Injected by the trainer after setup(), before the loop:
         self.store = None          # CheckpointStore
         self.logger = None         # RunLogger
+        # Tasks that run evals overwrite this each time; the trainer ships the final
+        # value to the run dir + ledger (the run's "result" row).
+        self.last_val_metrics: dict = {}
         # Populated by setup():
         self.dataloader = None
         self.optimizers: list = []
@@ -63,6 +66,25 @@ class Task:
 
     def grad_clip(self) -> float | None:
         return self.rc.train.grad_clip
+
+    def param_counts(self) -> dict:
+        """Per-component parameter counts (millions) for the run's fairness bookkeeping —
+        an architecture swap that silently doubles the parameter budget should be visible
+        right next to its metrics. Components are found by their conventional attribute
+        names; subclasses with exotic structure can override."""
+        import torch.nn as nn
+        counts = {}
+        for attr in ("tok", "car", "disc", "dino"):
+            mod = getattr(self, attr, None)
+            if isinstance(mod, nn.Module):
+                n = sum(p.numel() for p in mod.parameters())
+                counts[attr] = round(n / 1e6, 3)
+        if isinstance(getattr(self, "tok", None), nn.Module):
+            for sub in ("encoder", "quantizer", "decoder"):
+                m = getattr(self.tok, sub, None)
+                if isinstance(m, nn.Module):
+                    counts[f"tok.{sub}"] = round(sum(p.numel() for p in m.parameters()) / 1e6, 3)
+        return counts
 
     # ---- checkpointing ----
     def checkpoint_state(self) -> tuple[dict, dict, list[str]]:

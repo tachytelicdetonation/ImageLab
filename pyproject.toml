@@ -1,7 +1,8 @@
 [project]
-name = "cvq-pokemon"
-version = "0.1.0"
-description = "Faithful, MacBook-scaled reimplementation of Channel-wise Vector Quantization (CVQ, arXiv:2605.26089) on a Pokemon dataset"
+name = "imagelab"
+version = "0.2.0"
+description = "A small lab for casual image-model experimentation: pluggable components, tiered runs (smoke/overfit/fast/full), and a filesystem ledger that makes results comparable"
+license = { file = "LICENSE" }
 requires-python = ">=3.11"
 dependencies = [
     # Core DL — torch>=2.4.1 per the CVQ README; MPS (Apple Metal) backend ships in the standard wheels.
@@ -24,6 +25,9 @@ dependencies = [
     "wandb>=0.17.0",
     "torchmetrics>=1.4.0",       # rFID, PSNR, SSIM
 ]
+
+[project.scripts]
+lab = "cvq.lab.cli:main"
 
 [dependency-groups]
 dev = ["pytest>=8.0"]

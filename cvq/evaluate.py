@@ -36,6 +36,8 @@ def main():
     ap.add_argument("--data-root", default="", help="override the checkpoint's data root")
     ap.add_argument("--device", default="auto")
     ap.add_argument("--no-fid", action="store_true")
+    ap.add_argument("--split", default="val", choices=["val", "train", "all"],
+                    help="which split to evaluate on (default: the held-out val split)")
     ap.add_argument("--max-images", type=int, default=0,
                     help="cap the full-dataset pass (0 = all; useful for quick checks)")
     ap.add_argument("--generate", action="store_true", help="also sample generations (needs a CAR)")
@@ -59,8 +61,11 @@ def main():
     for p in lpips_fn.parameters():
         p.requires_grad_(False)
 
-    # ---- full-dataset tokenizer metrics ----
-    ds = ManifestImageDataset(rc.data.root, size=rc.data.size, hflip=False)
+    # ---- full-split tokenizer metrics ----
+    split = None if args.split == "all" else args.split
+    ds = ManifestImageDataset(rc.data.root, size=rc.data.size, hflip=False,
+                              split=split, val_fraction=rc.data.val_fraction)
+    print(f"evaluating on split={args.split} ({len(ds)} images)")
     metrics, images = validate(tok, ds, device, batch_size=rc.train.batch_size,
                                compute_fid=not args.no_fid, lpips_fn=lpips_fn,
                                max_images=args.max_images)
@@ -71,7 +76,8 @@ def main():
         text_tok = build_text_tokenizer(rc.model)
         car = build_car(rc.model, tok.quantizer.codebook_size, tok.latent_channels, device)
         car.load_state_dict(ck["car"]); car.eval()
-        cds = CaptionedImageDataset(rc.data.root, size=rc.data.size, hflip=False)
+        cds = CaptionedImageDataset(rc.data.root, size=rc.data.size, hflip=False,
+                                    split=split, val_fraction=rc.data.val_fraction)
         ev = GroupedEvaluator(cds, collate=CARCollate(text_tok, max_len=rc.model.max_text_len),
                               device=device, sample_dir=out_dir)
         gm, gi = ev.eval_recon(tok, perceptual=lpips_fn, car=car, step=ck.get("step", 0))
@@ -95,7 +101,8 @@ def main():
     for k in sorted(metrics):
         v = metrics[k]
         print(f"  {k:42s} {v:.4f}" if isinstance(v, float) else f"  {k:42s} {v}")
-    report = {"ckpt": str(args.ckpt), "step": ck.get("step"), "metrics": metrics}
+    report = {"ckpt": str(args.ckpt), "step": ck.get("step"), "split": args.split,
+              "metrics": metrics}
     (out_dir / "metrics.json").write_text(json.dumps(report, indent=2))
     print(f"\nwrote {out_dir}/metrics.json + image grids")
 

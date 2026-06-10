@@ -34,7 +34,7 @@ def _no_autocast(t: torch.Tensor):
     return torch.autocast(device_type="cuda", enabled=False) if t.is_cuda else nullcontext()
 
 
-@register("quantizer", "fsq")
+@register("quantizer", "fsq", paper="arXiv:2309.15505")
 class ChannelFSQ(nn.Module):
     """Channel-wise FSQ. Per channel-token (dim D=h*w), project to len(levels) scalars,
     scalar-quantize each to its level count, project back. |C| = prod(levels)."""

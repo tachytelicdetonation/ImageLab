@@ -97,6 +97,7 @@ def test_config_warns_on_unknown_key(capsys):
 @pytest.mark.parametrize("name,kwargs", [
     ("ibq", {"codebook_size": 64, "commitment_beta": 0.25}),
     ("fsq", {"codebook_size": 64, "levels": [2] * 6}),
+    ("lfq", {"codebook_size": 64}),
 ])
 def test_quantizer_contract(name, kwargs):
     import cvq.models  # noqa: F401
@@ -123,6 +124,24 @@ def test_fsq_lookup_matches_forward():
     z = torch.randn(2, 8, 4, 4)
     z_q, idxs, _, _ = q(z)
     assert torch.allclose(q.lookup(idxs), z_q, atol=1e-5)
+
+
+def test_lfq_lookup_matches_forward_and_grads():
+    """Same fidelity requirement for the LFQ worked example + STE gradient flow."""
+    import cvq.models  # noqa: F401
+    torch.manual_seed(0)
+    q = build("quantizer", "lfq", token_dim=16, codebook_size=64)
+    z = torch.randn(2, 8, 4, 4, requires_grad=True)
+    z_q, idxs, aux, _ = q(z)
+    assert torch.allclose(q.lookup(idxs), z_q.detach(), atol=1e-5)
+    (z_q.sum() + aux).backward()
+    assert z.grad is not None and z.grad.abs().sum() > 0
+
+
+def test_lfq_rejects_non_power_of_two():
+    import cvq.models  # noqa: F401
+    with pytest.raises(ValueError, match="power-of-two"):
+        build("quantizer", "lfq", token_dim=16, codebook_size=100)
 
 
 # --------------------------------------------------------------------------- #
@@ -160,6 +179,92 @@ def test_ar_head_contract(name):
     idx = head.sample(torch.randn(B, 32), torch.randn(B, 32),
                       temperature=1.0, top_k=0, cfg_scale=2.0, do_cfg=True)
     assert idx.shape == (B, 1) and idx.max() < 64
+
+
+# --------------------------------------------------------------------------- #
+# data: split + overfit clamp
+# --------------------------------------------------------------------------- #
+def test_record_split_is_stable_and_per_item():
+    from cvq.data.dataset import record_split
+    recs = [{"file": f"img_{i:04d}.png"} for i in range(1000)]
+    splits = [record_split(r, 0.1) for r in recs]
+    frac = splits.count("val") / len(splits)
+    assert 0.05 < frac < 0.15                       # hash buckets land near the fraction
+    # per-item stability: growing the dataset must never reassign existing records
+    assert [record_split(r, 0.1) for r in recs[:100]] == splits[:100]
+    # explicit manifest split wins over the hash
+    assert record_split({"file": "x.png", "split": "val"}, 0.0) == "val"
+    # val_fraction=0 -> everything trains (legacy behavior)
+    assert all(record_split(r, 0.0) == "train" for r in recs)
+
+
+def test_overfit_dataset_clamps_and_repeats():
+    from cvq.data.dataset import OverfitDataset
+
+    class DS(torch.utils.data.Dataset):
+        records = [{"file": f"{i}.png", "dataset": "all"} for i in range(10)]
+
+        def __len__(self):
+            return 10
+
+        def __getitem__(self, i):
+            return i
+
+    ds = OverfitDataset(DS(), n=1, repeat_to=64)
+    assert len(ds) == 64
+    assert {ds[i] for i in range(64)} == {0}        # one image, repeated
+    assert len(ds.records) == 64                    # evaluator-visible view matches
+
+
+# --------------------------------------------------------------------------- #
+# lab layer: tiers, overrides, naming, ledger
+# --------------------------------------------------------------------------- #
+def test_tier_overfit_transforms_config():
+    from cvq.lab.tiers import apply_overrides, apply_tier
+    cfg = base_cfg()
+    steps = apply_tier(cfg, "overfit")
+    assert steps == 300
+    assert cfg["train"]["overfit_n"] == 1
+    assert cfg["data"]["hflip"] is False
+    assert cfg["train"]["val_fid"] is False
+    # explicit --set wins over the tier
+    deltas = apply_overrides(cfg, ["train.overfit_n=4", "model.quant_type=lfq"])
+    assert cfg["train"]["overfit_n"] == 4 and deltas["model.quant_type"] == "lfq"
+    rc = from_dict(cfg)                              # still validates
+    assert rc.train.overfit_n == 4
+
+
+def test_auto_name_encodes_deltas():
+    from cvq.lab.tiers import auto_name
+    n = auto_name("tok_inet", "overfit", {"train.lr": 0.0002, "model.quant_type": "lfq"})
+    assert n == "tok_inet_overfit_lr-0.0002_quant_type-lfq"
+
+
+def test_rundir_ledger_roundtrip(tmp_path):
+    from cvq.lab.rundir import RunDir, ledger_rows
+    rc = from_dict(base_cfg())
+    rd = RunDir.create("test_run", root=tmp_path)
+    rd.start(name="test_run", task="tokenizer", config_path="x.yaml", tier="smoke",
+             deltas={"train.lr": 1e-4}, rc=rc)
+    assert (rd.dir / "config.yaml").exists()
+    rows = ledger_rows(tmp_path)
+    assert len(rows) == 1 and rows[0]["status"] == "running"
+    rd.finish(status="done", steps=8, final_metrics={"val/recon_l2_full": 0.5},
+              params={"tok": 1.2})
+    rows = ledger_rows(tmp_path)
+    assert len(rows) == 1                            # last row per run_id wins
+    assert rows[0]["status"] == "done"
+    assert rows[0]["final_metrics"]["val/recon_l2_full"] == 0.5
+    meta = (rd.dir / "meta.json").read_text()
+    assert "git" in meta and "steps_per_sec" in meta
+
+
+def test_overfit_verdict_gates():
+    from cvq.lab.criteria import overfit_verdict
+    assert overfit_verdict("tokenizer", {"val/recon_l2_full": 0.001})[0] == "pass"
+    assert overfit_verdict("tokenizer", {"val/recon_l2_full": 0.2})[0] == "fail"
+    assert overfit_verdict("car", {"car/token_acc": 0.99})[0] == "pass"
+    assert overfit_verdict("car", {})[0] == "unknown"
 
 
 # --------------------------------------------------------------------------- #

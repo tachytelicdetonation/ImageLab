@@ -28,7 +28,7 @@ from cvq.registry import register
 from .mbm_head import MBMHead
 
 
-@register("ar_head", "softmax")
+@register("ar_head", "softmax", paper="arXiv:2605.00503")
 class SoftmaxARHead(nn.Module):
     """Flat K-way classification per channel-token (EOSTok / Fork A)."""
 
@@ -77,7 +77,7 @@ class SoftmaxARHead(nn.Module):
         return torch.multinomial(logits.softmax(-1), 1)
 
 
-@register("ar_head", "mbm")
+@register("ar_head", "mbm", paper="arXiv:2602.09024")
 class MBMARHead(nn.Module):
     """Masked-bit modeling over FSQ bit indices (BAR / Fork B).
 

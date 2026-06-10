@@ -90,9 +90,15 @@ class StepOutput:
 # wandb + tensorboard logger
 # --------------------------------------------------------------------------- #
 class RunLogger:
-    """Thin wrapper around wandb + TB. Same call sites as the inline `wlog` closures."""
+    """Thin wrapper around wandb + TB + a metrics.jsonl time series.
 
-    def __init__(self, cfg: dict, run_dir: str | Path | None = None):
+    The JSONL is the offline source of truth (lab gallery/compare plot from it);
+    wandb/tensorboard are optional mirrors.
+    """
+
+    def __init__(self, cfg: dict, run_dir: str | Path | None = None,
+                 jsonl_path: str | Path | None = None):
+        self._jsonl = open(jsonl_path, "a") if jsonl_path else None
         wcfg = cfg.get("wandb", {}) or {}
         self.use_wandb = _HAS_WANDB and wcfg.get("enabled", False)
         if self.use_wandb:
@@ -110,6 +116,16 @@ class RunLogger:
             self.writer = SummaryWriter(str(run_dir))
 
     def log(self, d: dict, step: int):
+        if self._jsonl is not None:
+            row = {"step": step, "t": round(time.time(), 1)}
+            for k, v in d.items():
+                try:
+                    row[k] = round(float(v), 6)
+                except (TypeError, ValueError):
+                    pass  # scalar series only — images/none go to the other sinks
+            import json
+            self._jsonl.write(json.dumps(row) + "\n")
+            self._jsonl.flush()
         if self.writer is not None:
             for k, v in d.items():
                 try:
@@ -130,6 +146,8 @@ class RunLogger:
             wandb.log_artifact(art, aliases=aliases)
 
     def close(self):
+        if self._jsonl is not None:
+            self._jsonl.close()
         if self.writer is not None:
             self.writer.close()
         if self.use_wandb:
@@ -230,6 +248,9 @@ class TrainLoop:
         self.log = logger
         self.batch_size = batch_size
         self.disc_start_step = disc_start_step
+        # Most recent log_every scalars — the trainer ships these to the run ledger
+        # (tasks without a val pass still get a result row; crashed runs keep their last state).
+        self.last_logs: dict = {}
 
     def run(self, *, dataloader, epochs: int, start_step: int, start_epoch: int,
             step_runner, optimizers: list, schedulers: list,
@@ -291,6 +312,8 @@ class TrainLoop:
                         logs["sys/gpu_mem_gb"] = torch.cuda.max_memory_allocated() / 1e9
                     if extra_logs_fn is not None:
                         logs.update(extra_logs_fn(step, out) or {})
+                    self.last_logs = {k: float(v) for k, v in logs.items()
+                                      if isinstance(v, (int, float))}
                     self.log.log(logs, step)
                     print(f"{print_prefix}e{epoch} s{step} | "
                           + " ".join(f"{k.split('/')[-1]} {v:.3f}" for k, v in out.logs.items()

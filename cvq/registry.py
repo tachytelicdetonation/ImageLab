@@ -32,10 +32,15 @@ from typing import Callable, TypeVar
 T = TypeVar("T")
 
 _REGISTRY: dict[str, dict[str, type]] = {}
+_META: dict[tuple[str, str], dict] = {}
 
 
-def register(kind: str, name: str) -> Callable[[T], T]:
-    """Class decorator: make `cls` buildable as build(kind, name, **kwargs)."""
+def register(kind: str, name: str, paper: str | None = None) -> Callable[[T], T]:
+    """Class decorator: make `cls` buildable as build(kind, name, **kwargs).
+
+    `paper` (e.g. "arXiv:2309.15505") credits the method's source — `lab cite <config>`
+    collects these for every component a run uses.
+    """
 
     def deco(cls: T) -> T:
         bucket = _REGISTRY.setdefault(kind, {})
@@ -45,9 +50,16 @@ def register(kind: str, name: str) -> Callable[[T], T]:
                 f"{bucket[name].__module__}.{bucket[name].__qualname__}"
             )
         bucket[name] = cls
+        if paper:
+            _META[(kind, name)] = {"paper": paper}
         return cls
 
     return deco
+
+
+def meta(kind: str, name: str) -> dict:
+    """Registration metadata (paper reference etc.) for a component; {} if none."""
+    return _META.get((kind, name), {})
 
 
 def get(kind: str, name: str) -> type:

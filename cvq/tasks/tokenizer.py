@@ -12,7 +12,7 @@ import torch
 from torch.utils.data import DataLoader
 from torchvision.utils import make_grid, save_image
 
-from cvq.data.dataset import ManifestImageDataset
+from cvq.data.dataset import ManifestImageDataset, OverfitDataset
 from cvq.eval.metrics import validate
 from cvq.factory import build_discriminator, build_tokenizer
 from cvq.losses.losses import CVQLoss
@@ -23,7 +23,7 @@ from cvq.training_loop import split_decay_groups, warmup_lr_lambda
 from cvq.utils import denorm
 
 
-@register("task", "tokenizer")
+@register("task", "tokenizer", paper="arXiv:2605.26089")
 class TokenizerTask(Task):
     gan = True
     ckpt_prefix = "cvq"
@@ -33,13 +33,24 @@ class TokenizerTask(Task):
     def setup(self):
         rc, t, l, device = self.rc, self.rc.train, self.rc.loss, self.device
 
-        # ---- data ----
-        ds = ManifestImageDataset(rc.data.root, size=rc.data.size, hflip=rc.data.hflip)
+        # ---- data: train on the train split, validate on the held-out split ----
+        ds = ManifestImageDataset(rc.data.root, size=rc.data.size, hflip=rc.data.hflip,
+                                  split="train", val_fraction=rc.data.val_fraction)
+        if t.overfit_n:
+            ds = OverfitDataset(ds, t.overfit_n)
+            print(f"OVERFIT MODE: dataset clamped to {ds.n} image(s)")
+        # Val: no flips/augments so the fixed batch and all metrics are deterministic and
+        # comparable run-to-run. In overfit mode "val" IS the clamped train set — the only
+        # meaningful question there is "did it memorize?".
+        self.val_ds = ds if t.overfit_n else ManifestImageDataset(
+            rc.data.root, size=rc.data.size, hflip=False,
+            split="val", val_fraction=rc.data.val_fraction)
         self.ds = ds
         self.dataloader = DataLoader(ds, batch_size=t.batch_size, shuffle=True,
                                      num_workers=t.num_workers, drop_last=True,
                                      pin_memory=False)
-        print(f"dataset: {len(ds)} images | {len(self.dataloader)} batches/epoch")
+        print(f"dataset: {len(ds)} train / {len(self.val_ds)} val images | "
+              f"{len(self.dataloader)} batches/epoch")
 
         # ---- models ----
         self.tok, _ = build_tokenizer(rc, device)
@@ -84,7 +95,11 @@ class TokenizerTask(Task):
         self.disc_params = list(self.disc.parameters())
 
         self.sample_dir = self._sample_dir()
-        self.fixed_batch = next(iter(self.dataloader))["image"][:8].to(device)
+        # First val images in manifest order — NOT drawn through the run's RNG stream, so
+        # two runs with different seeds render grids of the SAME images (comparable by eye).
+        n_fix = min(8, len(self.val_ds))
+        self.fixed_batch = torch.stack(
+            [self.val_ds[i]["image"] for i in range(n_fix)], 0).to(device)
 
     def _sample_dir(self):
         from pathlib import Path
@@ -113,7 +128,8 @@ class TokenizerTask(Task):
         logs.update({
             "codebook/usage_batch": out["stats"]["usage"],
             "codebook/perplexity": out["stats"]["perplexity"],
-            "codebook/quant_error": out["stats"]["quant_error"],
+            # .get: parameter-free quantizers (fsq/lfq) don't all report quant_error
+            "codebook/quant_error": out["stats"].get("quant_error", 0.0),
             "train/c_keep": c_keep if c_keep is not None else self.total_channels,
         })
         if "entropy_loss" in out["stats"]:
@@ -139,9 +155,11 @@ class TokenizerTask(Task):
 
     def val_fn(self, step):
         t = self.rc.train
-        metrics, images = validate(self.tok, self.ds, self.device, batch_size=t.batch_size,
+        metrics, images = validate(self.tok, self.val_ds, self.device,
+                                   batch_size=t.batch_size,
                                    compute_fid=t.val_fid, lpips_fn=self.crit.perceptual)
         print("  val:", {k: round(v, 4) for k, v in metrics.items() if isinstance(v, float)})
+        self.last_val_metrics = metrics
         score = metrics.get("val/rFID", metrics.get("val/recon_l2_full", float("inf")))
         if self.store.save_best(score, step, self.rc.raw, {"tokenizer": self.tok.state_dict()}):
             self.logger.log_artifact(self.store.best_path(), "cvq-tokenizer", "model",
@@ -165,10 +183,12 @@ class TokenizerTask(Task):
 
     def finalize(self, final_step):
         t = self.rc.train
-        metrics, images = validate(self.tok, self.ds, self.device, batch_size=t.batch_size,
+        metrics, images = validate(self.tok, self.val_ds, self.device,
+                                   batch_size=t.batch_size,
                                    compute_fid=t.val_fid, lpips_fn=self.crit.perceptual)
         self.logger.log(metrics, final_step)
         self.logger.log_images(images, final_step)
+        self.last_val_metrics = metrics
         print("final val:", {k: round(v, 4) for k, v in metrics.items() if isinstance(v, float)})
         final_score = metrics.get("val/rFID", metrics.get("val/recon_l2_full", float("inf")))
         aliases = ["latest", "best"] if final_score <= self.store.best_score else ["latest"]

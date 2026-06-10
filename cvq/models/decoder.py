@@ -89,7 +89,7 @@ class AttnBlock(nn.Module):
         return x + self.proj_out(out)
 
 
-@register("decoder", "vqgan")
+@register("decoder", "vqgan", paper="arXiv:2012.09841")
 class Decoder(nn.Module):
     """Latent grid -> image. Faithful taming-transformers decoder structure."""
 

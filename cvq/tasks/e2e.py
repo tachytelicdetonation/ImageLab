@@ -15,6 +15,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from cvq.data.car_dataset import CaptionedImageDataset, CARCollate
+from cvq.data.dataset import OverfitDataset
 from cvq.eval.evaluator import GroupedEvaluator
 from cvq.factory import (build_car, build_conditioning, build_discriminator,
                          build_text_tokenizer, build_tokenizer)
@@ -25,7 +26,7 @@ from cvq.tasks.base import StepOutput, Task
 from cvq.training_loop import split_decay_groups, warmup_lr_lambda
 
 
-@register("task", "e2e")
+@register("task", "e2e", paper="arXiv:2605.00503")
 class E2ETask(Task):
     gan = True
     ckpt_prefix = "e2e"
@@ -77,14 +78,22 @@ class E2ETask(Task):
                   + (f" (alpha={t.channel_weight_alpha})" if self.cw_schedule in ("linear", "exp") else "")
                   + f" | early/late ratio = {self.chan_w[0].item() / self.chan_w[-1].item():.2f}")
 
-        # ---- data ----
+        # ---- data: train split for the loop, held-out val split for the evaluator ----
         ds = CaptionedImageDataset(rc.data.root, size=rc.data.size, hflip=rc.data.hflip,
-                                   augment=rc.data.augment)
+                                   augment=rc.data.augment,
+                                   split="train", val_fraction=rc.data.val_fraction)
+        if t.overfit_n:
+            ds = OverfitDataset(ds, t.overfit_n)
+            print(f"OVERFIT MODE: dataset clamped to {ds.n} image(s)")
+        eval_ds = ds if t.overfit_n else CaptionedImageDataset(
+            rc.data.root, size=rc.data.size, hflip=False,
+            split="val", val_fraction=rc.data.val_fraction)
         collate = CARCollate(text_tok, max_len=m.max_text_len)
         self.dataloader = DataLoader(ds, batch_size=t.batch_size, shuffle=True,
                                      num_workers=t.num_workers, drop_last=True,
                                      collate_fn=collate)
-        print(f"dataset: {len(ds)} images | {len(self.dataloader)} batches/epoch")
+        print(f"dataset: {len(ds)} train / {len(eval_ds)} val images | "
+              f"{len(self.dataloader)} batches/epoch")
 
         # ---- optimizers ----
         betas = (t.beta1, t.beta2)
@@ -121,7 +130,7 @@ class E2ETask(Task):
 
         # ---- per-dataset eval split (easy-vs-hard) ----
         self.sample_dir = Path(rc.out.sample_dir)
-        self.evaluator = GroupedEvaluator(ds, collate=collate, device=device,
+        self.evaluator = GroupedEvaluator(eval_ds, collate=collate, device=device,
                                           sample_dir=self.sample_dir)
         self.prompts_by_ds = m.sample_prompts_by_dataset or {"all": m.sample_prompts}
         print(f"eval split: {len(self.evaluator.eval_batches)} group(s) -> "
@@ -209,8 +218,23 @@ class E2ETask(Task):
                 top_k=m.top_k, cfg_scale=m.cfg_scale))
         if metrics:
             self.logger.log(metrics, step)
+            self.last_val_metrics = metrics
         self.tok.train(); self.car.train()
         return images
+
+    def finalize(self, final_step):
+        # One last eval pass so the ledger row reflects the FINAL model, not whichever
+        # sample_every step happened to run last.
+        self.tok.eval(); self.car.eval()
+        metrics, images = self.evaluator.eval_recon(
+            self.tok, perceptual=self.crit.perceptual,
+            car=self.car if final_step >= self.ar_start else None, step=final_step)
+        if metrics:
+            self.logger.log(metrics, final_step)
+            self.logger.log_images(images, final_step)
+            self.last_val_metrics = metrics
+            print("final eval:", {k: round(v, 4) for k, v in metrics.items()
+                                  if isinstance(v, float)})
 
     # ------------------------------------------------------------------ #
     def checkpoint_state(self):

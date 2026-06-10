@@ -35,7 +35,7 @@ class Downsample(nn.Module):
         return F.avg_pool2d(x, kernel_size=2, stride=2)
 
 
-@register("encoder", "cnn")
+@register("encoder", "cnn", paper="arXiv:2012.09841")
 class Encoder(nn.Module):
     def __init__(
         self,

@@ -24,8 +24,10 @@ class CaptionedImageDataset(Dataset):
     """Wraps ManifestImageDataset; returns image + raw prompt string. Tokenization happens
     in collate so we can batch-pad with the backbone's tokenizer."""
 
-    def __init__(self, root, size=256, hflip=True, augment=False):
-        self.base = ManifestImageDataset(root, size=size, hflip=hflip, augment=augment)
+    def __init__(self, root, size=256, hflip=True, augment=False, split=None,
+                 val_fraction=0.1):
+        self.base = ManifestImageDataset(root, size=size, hflip=hflip, augment=augment,
+                                         split=split, val_fraction=val_fraction)
 
     def __len__(self):
         return len(self.base)
