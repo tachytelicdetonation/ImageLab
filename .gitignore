@@ -1,10 +1,16 @@
 # Data & artifacts (anchored to repo root so cvq/data/ source is NOT ignored)
 /data/
-/checkpoints/
+/checkpoints*/
 /samples/
 /runs/
+/wandb/
+/server_samples/
+/box_pull/
+/results_box/
 *.pt
 *.ckpt
+/*.png
+!docs/*.png
 
 # Python
 .venv/

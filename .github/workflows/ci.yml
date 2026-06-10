@@ -1,0 +1,36 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Install (CPU torch)
+        run: |
+          uv venv
+          uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          uv pip install -e . --group dev
+      - name: Seam tests (no network, no datasets)
+        run: uv run --no-sync pytest tests/ -q
+      - name: Contract probes for every builtin component
+        run: |
+          uv run --no-sync python -m cvq.lab check quantizer ibq
+          uv run --no-sync python -m cvq.lab check quantizer lfq
+          uv run --no-sync python -m cvq.lab check quantizer fsq --kwargs "levels: [2,2,2,2,2,2]"
+          uv run --no-sync python -m cvq.lab check ar_head softmax
+          uv run --no-sync python -m cvq.lab check ar_head mbm
+          uv run --no-sync python -m cvq.lab check encoder cnn
+          uv run --no-sync python -m cvq.lab check decoder vqgan
+      - name: Scaffold tutorial cannot rot (lab new -> lab check)
+        run: |
+          uv run --no-sync python -m cvq.lab new quantizer ci_scratch_q
+          uv run --no-sync python -m cvq.lab check quantizer ci_scratch_q
