@@ -1,7 +1,7 @@
 """
-`lab check <kind> <name>` — the component contract as an instant probe, not just CI.
+cvq's `lab check` suites — the component contracts as instant probes.
 
-The moment you save a new component, this answers "is it wired right?" in seconds:
+The moment you save a new component, these answer "is it wired right?" in seconds:
 shapes, index ranges, the truncate/lookup contract, and — the classic silent killer —
 whether decode-from-indices reproduces the train-time z_q and whether the straight-
 through gradient actually reaches the encoder. Every probe failure here is a bug class
@@ -10,59 +10,36 @@ that otherwise survives until a full run produces noise.
     lab check quantizer lfq
     lab check quantizer fsq --kwargs "levels: [2,2,2,2,2,2]"
     lab check ar_head mbm
+
+These register into imagelab's generic harness (imagelab/lab/probes.py) — they're the
+worked example of a project defining contracts for its OWN component kinds.
 """
 
 from __future__ import annotations
 
 import torch
 
-
-class _Probe:
-    def __init__(self):
-        self.failed = 0
-
-    def check(self, desc: str, fn):
-        try:
-            fn()
-            print(f"  \033[32m✓\033[0m {desc}")
-        except Exception as e:
-            print(f"  \033[31m✗\033[0m {desc}\n      {type(e).__name__}: {e}")
-            self.failed += 1
-
-    def done(self, kind: str, name: str) -> int:
-        if self.failed:
-            print(f"\n{kind}/{name}: {self.failed} contract violation(s) — fix before "
-                  f"training (a run would fail later and less legibly)")
-            return 1
-        print(f"\n{kind}/{name}: contract OK — ready for `lab run ... --tier overfit`")
-        return 0
+from imagelab.lab.probes import Probe, assert_ as _assert, register_checker
 
 
-def run_checks(kind: str, name: str, kwargs: dict) -> int:
+def _registered(kind: str, name: str):
     import cvq.models, cvq.tasks  # noqa: F401  — register builtins + user modules
-    from cvq.registry import get
-    torch.manual_seed(0)
+    from imagelab.registry import get
     try:
-        get(kind, name)
+        return get(kind, name)
     except KeyError as e:
         print(e.args[0])
         print("(new module? add `from . import yourmodule` to cvq/models/__init__.py)")
-        return 1
-    fn = {"quantizer": _check_quantizer, "ar_head": _check_ar_head,
-          "encoder": _check_encoder, "decoder": _check_decoder,
-          "task": _check_task}.get(kind)
-    if fn is None:
-        print(f"no checker for kind {kind!r} (have: quantizer, ar_head, encoder, "
-              f"decoder, task)")
-        return 1
-    print(f"checking {kind}/{name} {kwargs or ''}")
-    return fn(name, kwargs)
+        return None
 
 
 # --------------------------------------------------------------------------- #
-def _check_quantizer(name: str, kwargs: dict) -> int:
-    from cvq.registry import build
-    p = _Probe()
+@register_checker("quantizer")
+def check_quantizer(name: str, kwargs: dict) -> int:
+    from imagelab.registry import build
+    if _registered("quantizer", name) is None:
+        return 1
+    p = Probe()
     kw = {"token_dim": 16, "codebook_size": 64, **kwargs}
     B, C, s = 2, 8, 4  # token_dim = s*s = 16
     box = {}
@@ -116,14 +93,17 @@ def _check_quantizer(name: str, kwargs: dict) -> int:
     return p.done("quantizer", name)
 
 
-def _check_ar_head(name: str, kwargs: dict) -> int:
-    from cvq.registry import build
-    p = _Probe()
+@register_checker("ar_head")
+def check_ar_head(name: str, kwargs: dict) -> int:
+    from imagelab.registry import build
+    if _registered("ar_head", name) is None:
+        return 1
+    p = Probe()
     kw = {"hidden": 32, "codebook_size": 64, "backbone_dtype": torch.float32,
           "mbm_depth": 1, "mbm_heads": 2, "mbm_infer_steps": 2, **kwargs}
     B, C = 2, 8
     box = {}
-    p.check(f"constructs with {{hidden, codebook_size, backbone_dtype, ...}}",
+    p.check("constructs with {hidden, codebook_size, backbone_dtype, ...}",
             lambda: box.update(h=build("ar_head", name, **kw)))
     if "h" not in box:
         return p.done("ar_head", name)
@@ -151,13 +131,16 @@ def _check_ar_head(name: str, kwargs: dict) -> int:
     return p.done("ar_head", name)
 
 
-def _check_encoder(name: str, kwargs: dict) -> int:
-    from cvq.registry import build
-    p = _Probe()
+@register_checker("encoder")
+def check_encoder(name: str, kwargs: dict) -> int:
+    from imagelab.registry import build
+    if _registered("encoder", name) is None:
+        return 1
+    p = Probe()
     kw = {"ch": 32, "ch_mult": (1, 2), "num_res_blocks": 1, "z_channels": 8,
           "resolution": 32, "attn_resolutions": (16,), **kwargs}
     box = {}
-    p.check(f"constructs with factory kwargs", lambda: box.update(
+    p.check("constructs with factory kwargs", lambda: box.update(
         e=build("encoder", name, **kw)))
     if "e" in box:
         p.check("forward (B,3,32,32) -> (B, z_channels, 16, 16)", lambda: _assert(
@@ -166,9 +149,12 @@ def _check_encoder(name: str, kwargs: dict) -> int:
     return p.done("encoder", name)
 
 
-def _check_decoder(name: str, kwargs: dict) -> int:
-    from cvq.registry import build
-    p = _Probe()
+@register_checker("decoder")
+def check_decoder(name: str, kwargs: dict) -> int:
+    from imagelab.registry import build
+    if _registered("decoder", name) is None:
+        return 1
+    p = Probe()
     kw = {"ch": 32, "out_ch": 3, "ch_mult": (1, 2), "num_res_blocks": 1,
           "z_channels": 8, "resolution": 32, "attn_resolutions": (16,), **kwargs}
     box = {}
@@ -185,23 +171,3 @@ def _check_decoder(name: str, kwargs: dict) -> int:
             p.check("output in [-1,1] (the recon target range)", lambda: _assert(
                 out["y"].abs().max() <= 1.001, f"max |out| = {out['y'].abs().max():.3f}"))
     return p.done("decoder", name)
-
-
-def _check_task(name: str, _kwargs: dict) -> int:
-    from cvq.registry import get
-    from cvq.tasks.base import Task
-    p = _Probe()
-    cls = get("task", name)
-    p.check("subclasses cvq.tasks.base.Task", lambda: _assert(
-        issubclass(cls, Task), f"{cls} is not a Task"))
-    p.check("declares ckpt_prefix/latest_name", lambda: _assert(
-        cls.ckpt_prefix != Task.ckpt_prefix or name == "tokenizer",
-        "ckpt_prefix left at base default — checkpoints would collide"))
-    kind = "GANStep (generator_fn/discriminator_fn)" if cls.gan else "NoGANStep (step_fn)"
-    print(f"  i {name}: gan={cls.gan} -> trainer wires {kind}")
-    return p.done("task", name)
-
-
-def _assert(cond, msg: str):
-    if not cond:
-        raise AssertionError(msg)

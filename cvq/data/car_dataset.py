@@ -12,7 +12,7 @@ from __future__ import annotations
 import torch
 from torch.utils.data import Dataset
 
-from .dataset import ManifestImageDataset
+from imagelab.data.dataset import ManifestImageDataset
 
 
 def prettify_name(name: str) -> str:

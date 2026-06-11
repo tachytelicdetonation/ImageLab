@@ -16,7 +16,6 @@ row per run_id, so appending an updated row "overwrites" without rewriting the f
 
 from __future__ import annotations
 
-import dataclasses
 import json
 import subprocess
 import time
@@ -35,17 +34,6 @@ def _git_info() -> dict:
         return {"sha": sha or None, "dirty": dirty}
     except Exception:
         return {"sha": None, "dirty": None}
-
-
-def resolved_config_dict(rc) -> dict:
-    """The config with every default materialized — what the run ACTUALLY used, not just
-    what the YAML said. `raw` is excluded (it's the unresolved input, embedded in ckpts)."""
-    out = {"task": rc.task}
-    for f in dataclasses.fields(rc):
-        if f.name in ("task", "raw"):
-            continue
-        out[f.name] = dataclasses.asdict(getattr(rc, f.name))
-    return out
 
 
 class RunDir:
@@ -68,10 +56,12 @@ class RunDir:
         return cls(d)
 
     # ---- provenance ------------------------------------------------------- #
-    def write_config(self, rc):
+    def write_config(self, resolved: dict):
+        """`resolved` is the config as ACTUALLY used, defaults materialized
+        (Task.resolved_config builds it — tasks with their own schema override that)."""
         import yaml
         (self.dir / "config.yaml").write_text(
-            yaml.safe_dump(resolved_config_dict(rc), sort_keys=False))
+            yaml.safe_dump(resolved, sort_keys=False))
 
     def write_meta(self, **fields):
         """Merge fields into meta.json (start writes identity, end writes outcome)."""
@@ -86,13 +76,18 @@ class RunDir:
         return self.dir.parent
 
     def start(self, *, name: str, task: str, config_path: str, tier: str,
-              deltas: dict, rc, argv=None):
+              deltas: dict, resolved: dict, seed, device: str, amp: str,
+              key_metrics: list | None = None, higher_is_better: list | None = None,
+              argv=None):
         import torch
-        self.write_config(rc)
+        self.write_config(resolved)
         self.write_meta(
             run_id=self.run_id, name=name, task=task, tier=tier,
             config_path=str(config_path), deltas=deltas,
-            seed=rc.train.seed, device=rc.train.device, amp=rc.train.amp,
+            seed=seed, device=device, amp=amp,
+            # The task's editorial declarations travel WITH the run, so the CLI can
+            # render any model family's results without importing its code.
+            key_metrics=key_metrics or [], higher_is_better=higher_is_better or [],
             torch=torch.__version__, git=_git_info(), argv=argv,
             started=datetime.now().isoformat(timespec="seconds"), status="running",
         )
@@ -123,7 +118,7 @@ class RunDir:
         meta = json.loads((self.dir / "meta.json").read_text())
         keep = ("run_id", "name", "task", "tier", "deltas", "seed", "started", "status",
                 "steps", "wall_min", "steps_per_sec", "params", "final_metrics",
-                "verdict", "parent", "git")
+                "verdict", "parent", "git", "key_metrics", "higher_is_better")
         row = {k: meta[k] for k in keep if k in meta}
         row.update(extra)
         return row

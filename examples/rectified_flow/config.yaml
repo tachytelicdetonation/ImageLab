@@ -1,0 +1,35 @@
+# Rectified flow on ImageNette-64 — same data, same UNet, same val protocol as the
+# DDPM baseline; only the objective + sampler differ.
+#   lab run examples/rectified_flow/config.yaml --tier overfit
+#   lab compare <this-run> <ddpm-run>
+
+task: task.py:RectifiedFlowTask
+
+data:
+  root: data/imagenette
+  size: 64
+  hflip: true
+  val_fraction: 0.1
+
+model:
+  ch: 64
+  ch_mult: [1, 2, 2]
+  num_res_blocks: 2
+  ema_decay: 0.999
+  sample_steps: 50         # Euler steps for the sample grids
+
+train:
+  batch_size: 64
+  epochs: 300
+  lr: 2.0e-4
+  weight_decay: 0.0
+  warmup_steps: 500
+  log_every: 50
+  sample_every: 1000
+  val_every: 500
+  ckpt_every: 2000
+  num_workers: 4
+  seed: 0
+
+wandb:
+  enabled: false

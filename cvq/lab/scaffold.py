@@ -1,15 +1,19 @@
 """
-`lab new <kind> <name>` — idea to runnable component in one command.
+cvq's `lab new` scaffolds — idea to runnable component in one command.
 
-Writes cvq/models/<name>.py with a WORKING minimal implementation of the contract (it
-passes `lab check` immediately — replace the math, keep the seams), registers it in
-cvq/models/__init__.py, and prints the YAML to select it. The activation energy between
-"thought in IDEAS.md" and "running --tier overfit" should be ~zero.
+`lab new quantizer <name>` / `lab new ar_head <name>` write cvq/models/<name>.py with a
+WORKING minimal implementation of the contract (it passes `lab check` immediately —
+replace the math, keep the seams) and register it in cvq/models/__init__.py.
+
+(`lab new task <name>` is the framework's own scaffold — a standalone project directory;
+see imagelab/lab/scaffold.py.)
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+
+from imagelab.lab.scaffold import register_scaffold
 
 QUANTIZER_T = '''"""{name}: a channel-wise quantizer experiment.
 
@@ -27,7 +31,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from cvq.registry import register
+from imagelab.registry import register
 
 
 @register("quantizer", "{name}", paper=None)  # cite your source when there is one
@@ -87,7 +91,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from cvq.registry import register
+from imagelab.registry import register
 
 
 @register("ar_head", "{name}", paper=None)
@@ -127,84 +131,17 @@ class {cls}(nn.Module):
         return logits.argmax(-1, keepdim=True)
 '''
 
-TASK_T = '''"""{name}: a training recipe. Subclass Task, fill in setup() + the step fn(s).
-
-Run with: python -m cvq.trainer --config yourconfig.yaml --task {name}
-(or set `task: {name}` in the YAML). The trainer owns seed/loop/ckpt/ledger; you own
-models, data, optimizers, and per-step losses. Construction ORDER in setup() is
-RNG-load-bearing — keep it stable so seeds reproduce.
-"""
-
-from __future__ import annotations
-
-import torch
-from torch.utils.data import DataLoader
-
-from cvq.data.dataset import ManifestImageDataset, OverfitDataset
-from cvq.registry import register
-from cvq.tasks.base import StepOutput, Task
-from cvq.training_loop import split_decay_groups, warmup_lr_lambda
+YAML_KEY = {"quantizer": "model.quant_type", "ar_head": "model.head_type"}
 
 
-@register("task", "{name}")
-class {cls}(Task):
-    gan = False                  # True -> implement generator_fn/discriminator_fn instead
-    ckpt_prefix = "{name}"
-    latest_name = "{name}_latest.pt"
-    has_val = False
-
-    def setup(self):
-        rc, t = self.rc, self.rc.train
-        ds = ManifestImageDataset(rc.data.root, size=rc.data.size, hflip=rc.data.hflip,
-                                  split="train", val_fraction=rc.data.val_fraction)
-        if t.overfit_n:
-            ds = OverfitDataset(ds, t.overfit_n)
-        self.dataloader = DataLoader(ds, batch_size=t.batch_size, shuffle=True,
-                                     num_workers=t.num_workers, drop_last=True)
-        self.model = ...        # TODO build via cvq.factory / cvq.registry
-        groups = split_decay_groups(list(self.model.parameters()), t.lr, t.weight_decay)
-        opt = torch.optim.AdamW(groups, betas=(t.beta1, t.beta2))
-        self.optimizers = [opt]
-        self.schedulers = [torch.optim.lr_scheduler.LambdaLR(
-            opt, lambda s: warmup_lr_lambda(s, t.warmup_steps))]
-        self.gen_params = [p for g in groups for p in g["params"]]
-
-    def step_fn(self, batch, step) -> StepOutput:
-        x = batch["image"].to(self.device)
-        loss = ...              # TODO your objective
-        return StepOutput(loss=loss, logs={{"train/loss": loss.item()}})
-
-    def checkpoint_state(self):
-        return ({{"model": self.model.state_dict()}},
-                {{"opt": self.optimizers[0].state_dict()}}, ["model"])
-
-    def load_resume(self, ck):
-        self.model.load_state_dict(ck["model"])
-        self.optimizers[0].load_state_dict(ck["opt"])
-        return ck["step"], 0
-'''
-
-TEMPLATES = {"quantizer": QUANTIZER_T, "ar_head": AR_HEAD_T, "task": TASK_T}
-YAML_KEY = {"quantizer": "model.quant_type", "ar_head": "model.head_type",
-            "encoder": "model.encoder_type", "decoder": "model.decoder_type",
-            "task": "task"}
-
-
-def scaffold(kind: str, name: str) -> int:
-    if kind not in TEMPLATES:
-        print(f"no template for kind {kind!r} (have: {sorted(TEMPLATES)}; encoders/"
-              f"decoders are best started by copying cvq/models/encoder_cnn.py / decoder.py)")
-        return 1
-    if not name.isidentifier():
-        print(f"{name!r} is not a valid python identifier")
-        return 1
-    pkg = Path("cvq/tasks" if kind == "task" else "cvq/models")
+def _write_component(kind: str, template: str, name: str) -> int:
+    pkg = Path("cvq/models")
     dest = pkg / f"{name}.py"
     if dest.exists():
         print(f"{dest} already exists — refusing to overwrite")
         return 1
     cls = "".join(w.capitalize() for w in name.split("_")) or name.upper()
-    dest.write_text(TEMPLATES[kind].format(name=name, cls=cls))
+    dest.write_text(template.format(name=name, cls=cls))
 
     init = pkg / "__init__.py"
     lines = init.read_text().splitlines()
@@ -216,9 +153,19 @@ def scaffold(kind: str, name: str) -> int:
 
     print(f"wrote   {dest}")
     print(f"updated {init} (+ import)")
-    print(f"\nnext:")
+    print("\nnext:")
     print(f"  1. lab check {kind} {name}            # passes already — now make it yours")
     print(f"  2. set `{YAML_KEY[kind]}: {name}` in a config")
     print(f"  3. lab run <config> --tier overfit    # can it memorize one image?")
     print(f"  4. lab run <config> --tier fast       # is it better than baseline?")
     return 0
+
+
+@register_scaffold("quantizer")
+def new_quantizer(name: str) -> int:
+    return _write_component("quantizer", QUANTIZER_T, name)
+
+
+@register_scaffold("ar_head")
+def new_ar_head(name: str) -> int:
+    return _write_component("ar_head", AR_HEAD_T, name)

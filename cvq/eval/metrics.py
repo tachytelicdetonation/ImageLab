@@ -24,7 +24,7 @@ except Exception:  # pragma: no cover
     _HAS_TM = False
 
 
-from cvq.utils import denorm as _denorm  # noqa: E402
+from imagelab.utils import denorm as _denorm  # noqa: E402
 
 
 @torch.no_grad()

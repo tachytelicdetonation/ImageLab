@@ -6,8 +6,8 @@ previous, and has a kill criterion. Bad ideas should die at the cheapest tier th
 kill them:
 
     smoke    ~30s   does it execute?       (8 steps, no eval, no wandb)
-    overfit  ~min   can it learn AT ALL?   (1 image, 300 steps, pass/fail gate
-                                            — see lab/criteria.py OVERFIT_GATES)
+    overfit  ~min   can it learn AT ALL?   (1 sample, 300 steps, pass/fail against the
+                                            task's `overfit_gate` declaration)
     fast     ~20min better than baseline?  (2k-step budget, normal eval cadence)
     full     hours  paper-faithful numbers (config untouched)
 
@@ -15,6 +15,10 @@ Tiers are dict transforms applied to the parsed YAML BEFORE validation, and they
 the run's resolved config.yaml + checkpoint-embedded config — a tiered run is fully
 honest about what it actually ran. Explicit --set overrides are applied after the tier,
 so they always win.
+
+The generic tiers only touch framework keys plus two documented CONVENTION keys
+(train.warmup_steps, data.hflip/augment — harmless when a task ignores them). Tasks add
+their own transforms (and can override the step cap) via `Task.apply_tier(cfg, tier)`.
 """
 
 from __future__ import annotations
@@ -37,15 +41,15 @@ def apply_tier(cfg: dict, tier: str) -> int:
 
     if tier == "smoke":
         t.update(log_every=1, sample_every=4, val_every=10**9, ckpt_every=10**9,
-                 val_fid=False, num_workers=0)
+                 num_workers=0)
         cfg["wandb"]["enabled"] = False
         return 8
 
     if tier == "overfit":
         d = cfg.setdefault("data", {})
-        d["hflip"] = False           # memorize THE image, not it and its mirror
+        d["hflip"] = False           # memorize THE sample, not it and its mirror
         d["augment"] = False
-        t.update(overfit_n=1, val_fid=False,   # FID over one repeated image is undefined
+        t.update(overfit_n=1,
                  log_every=10, sample_every=100, val_every=10**9, ckpt_every=10**9,
                  epochs=10000)                 # max_steps is the real stop
         # A full-run warmup inside a 300-step probe would test the LR schedule, not the

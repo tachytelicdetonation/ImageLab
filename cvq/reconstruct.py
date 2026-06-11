@@ -18,9 +18,9 @@ import torch
 from torch.utils.data import DataLoader
 from torchvision.utils import make_grid, save_image
 
-from cvq.data.dataset import ManifestImageDataset
+from imagelab.data.dataset import ManifestImageDataset
 from cvq.factory import build_tokenizer
-from cvq.utils import denorm, resolve_device
+from imagelab.utils import denorm, resolve_device
 
 
 def build_from_ckpt(ckpt_path: str, device: str):

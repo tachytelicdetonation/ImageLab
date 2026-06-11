@@ -14,12 +14,12 @@ import torch
 from torch.utils.data import DataLoader
 
 from cvq.data.car_dataset import CaptionedImageDataset, CARCollate
-from cvq.data.dataset import OverfitDataset
+from imagelab.data.dataset import OverfitDataset
 from cvq.eval.evaluator import sample_generations
 from cvq.factory import (build_car, build_conditioning, build_text_tokenizer,
                          build_tokenizer)
 from cvq.nested_dropout import channel_weights
-from cvq.registry import register
+from imagelab.registry import register
 from cvq.tasks.base import StepOutput, Task
 
 
@@ -32,9 +32,17 @@ def cosine_lr_lambda(step, warmup, total):
 
 @register("task", "car", paper="arXiv:2605.26089")
 class CARTask(Task):
+    name = "car"
     gan = False
     ckpt_prefix = "car"
     latest_name = "car_latest.pt"
+    # YOURS TO TUNE — the overfit kill gate + what lab runs/board/compare lead with.
+    # An AR head should hit >90% token accuracy on one image's fixed token sequence.
+    overfit_gate = ("car/token_acc", ">=", 0.90)
+    key_metrics = ["eval/combined/token_acc", "eval/all/token_acc", "car/token_acc"]
+    higher_is_better = frozenset({"eval/combined/token_acc", "eval/all/token_acc",
+                                  "car/token_acc", "eval/combined/bit_acc",
+                                  "eval/all/bit_acc"})
 
     def setup(self):
         rc, t, m, device = self.rc, self.rc.train, self.rc.model, self.device

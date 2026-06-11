@@ -1,31 +1,34 @@
 """
 `lab` — the experimentation CLI. Queries over runs/ (the filesystem is the database).
 
-    lab run configs/tok_inet_64.yaml --tier overfit          # train (any trainer flag works)
+    lab run config.yaml --tier overfit                       # train (any trainer flag works)
     lab runs                                                 # ledger table
     lab compare 0610-1432 0609                               # config diff + metric diff
-    lab board --metric val/rFID                              # leaderboard
+    lab board --metric val/loss                              # leaderboard
     lab gallery                                              # static HTML: grids + curves
     lab report 0610-1432 0609 --format md                    # publication-ready table
-    lab sweep configs/tok.yaml --grid train.lr=1e-4,3e-4     # grid of runs
-    lab check quantizer lfq                                  # contract probes (~seconds)
-    lab new quantizer my_idea                                # scaffold a component
-    lab cite configs/tok_inet_64.yaml                        # papers behind a config
+    lab sweep config.yaml --grid train.lr=1e-4,3e-4          # grid of runs
+    lab check task my_idea                                   # contract probes (~seconds)
+    lab new task my_idea                                     # scaffold a runnable project
+    lab cite config.yaml                                     # papers behind a config
+
+Display logic (key metric columns, leaderboard direction) comes from each ledger row —
+tasks declare key_metrics/higher_is_better and the trainer stamps them into the row, so
+none of these commands import model code.
 """
 
 from __future__ import annotations
 
 import argparse
 import itertools
-import json
 import subprocess
 import sys
 from pathlib import Path
 
 import yaml
 
-from cvq.lab.criteria import HIGHER_IS_BETTER, KEY_METRICS, key_metrics_of
-from cvq.lab.rundir import RUNS_ROOT, ledger_rows
+from imagelab.lab.criteria import is_higher_better, key_metrics_of
+from imagelab.lab.rundir import RUNS_ROOT, ledger_rows
 
 
 # --------------------------------------------------------------------------- #
@@ -85,7 +88,7 @@ def flatten(d: dict, prefix: str = "") -> dict:
 # Subcommands
 # --------------------------------------------------------------------------- #
 def cmd_run(rest: list[str]) -> int:
-    from cvq.trainer import run as trainer_run
+    from imagelab.trainer import run as trainer_run
     if rest and not rest[0].startswith("-"):
         rest = ["--config", rest[0]] + rest[1:]
     return 0 if trainer_run(argv=rest) is not None else 1
@@ -100,7 +103,7 @@ def cmd_runs(args) -> int:
         return 0
     view = []
     for r in reversed(rows):  # newest first
-        keym = key_metrics_of(r.get("final_metrics") or {})
+        keym = key_metrics_of(r)
         view.append({
             "run": r.get("run_id"), "task": r.get("task"), "tier": r.get("tier"),
             "status": r.get("status"),
@@ -132,14 +135,16 @@ def cmd_compare(args) -> int:
           else "  (identical resolved configs)")
 
     ma, mb = a.get("final_metrics") or {}, b.get("final_metrics") or {}
-    shared = [k for k in KEY_METRICS if k in ma and k in mb]
+    lead = [k for k in (a.get("key_metrics") or []) + (b.get("key_metrics") or [])
+            if k in ma and k in mb]
+    shared = list(dict.fromkeys(lead))            # declared order, deduped
     shared += sorted((set(ma) & set(mb)) - set(shared))
     mrows = []
     for k in shared:
         va, vb = ma[k], mb[k]
         better = ""
         if isinstance(va, (int, float)) and isinstance(vb, (int, float)) and va != vb:
-            hib = k in HIGHER_IS_BETTER
+            hib = is_higher_better(k, a, b)
             better = a["run_id"] if (va > vb) == hib else b["run_id"]
         mrows.append({"metric": k, a["run_id"]: va, b["run_id"]: vb,
                       "delta": vb - va if isinstance(va, (int, float)) else "",
@@ -151,6 +156,9 @@ def cmd_compare(args) -> int:
         print("\nNOTE: step counts differ — this is not a compute-matched comparison.")
     if a.get("seed") != b.get("seed"):
         print("NOTE: seeds differ — at this scale, metric deltas of a few % can be noise.")
+    if a.get("task") != b.get("task"):
+        print(f"NOTE: different tasks ({a.get('task')} vs {b.get('task')}) — shared "
+              f"metrics must mean the same thing for this to be a fair comparison.")
     return 0
 
 
@@ -159,24 +167,26 @@ def cmd_board(args) -> int:
             and (not args.task or r.get("task") == args.task)]
     metric = args.metric
     if not metric:
-        for k in KEY_METRICS:
-            if any(k in (r.get("final_metrics") or {}) for r in rows):
-                metric = k
+        # first key metric (declared, else heuristic) of any completed run, newest first
+        for r in reversed(rows):
+            keys = list(key_metrics_of(r, n=1))
+            if keys:
+                metric = keys[0]
                 break
     scored = [r for r in rows if metric and metric in (r.get("final_metrics") or {})]
     if not scored:
         print(f"no completed runs with metric {metric!r}")
         return 0
-    scored.sort(key=lambda r: r["final_metrics"][metric],
-                reverse=metric in HIGHER_IS_BETTER)
+    hib = is_higher_better(metric, *scored)
+    scored.sort(key=lambda r: r["final_metrics"][metric], reverse=hib)
     view = [{"#": i + 1, "run": r["run_id"], metric: r["final_metrics"][metric],
-             "tier": r.get("tier"), "steps": r.get("steps"), "seed": r.get("seed"),
+             "task": r.get("task"), "tier": r.get("tier"), "steps": r.get("steps"),
+             "seed": r.get("seed"),
              "deltas": " ".join(f"{k.split('.')[-1]}={v}"
                                 for k, v in (r.get("deltas") or {}).items())[:40]}
             for i, r in enumerate(scored)]
-    print(f"leaderboard by {metric} ({'higher' if metric in HIGHER_IS_BETTER else 'lower'}"
-          f" is better)\n")
-    print(table(view, ["#", "run", metric, "tier", "steps", "seed", "deltas"]))
+    print(f"leaderboard by {metric} ({'higher' if hib else 'lower'} is better)\n")
+    print(table(view, ["#", "run", metric, "task", "tier", "steps", "seed", "deltas"]))
     return 0
 
 
@@ -187,8 +197,9 @@ def cmd_report(args) -> int:
     if not chosen:
         print("nothing to report")
         return 0
-    metrics = [k for k in KEY_METRICS
-               if any(k in (r.get("final_metrics") or {}) for r in chosen)]
+    metrics = list(dict.fromkeys(
+        k for r in chosen for k in r.get("key_metrics") or []
+        if k in (r.get("final_metrics") or {})))
     if args.format == "latex":
         cols = " & ".join(["run", "steps"] + [metric_short(m) for m in metrics])
         print("\\begin{tabular}{l" + "r" * (len(metrics) + 1) + "}\n\\toprule")
@@ -223,7 +234,7 @@ def cmd_sweep(args) -> int:
     for i, combo in enumerate(combos):
         sets = [f"{k}={v}" for k, v in combo.items()]
         print(f"\n--- sweep {i + 1}/{len(combos)}: {' '.join(sets)} ---")
-        cmd = [sys.executable, "-m", "cvq.trainer", "--config", args.config,
+        cmd = [sys.executable, "-m", "imagelab.trainer", "--config", args.config,
                "--tier", args.tier, "--set", *sets]
         r = subprocess.run(cmd)
         if r.returncode != 0:
@@ -232,8 +243,7 @@ def cmd_sweep(args) -> int:
     if new:
         print("\n== sweep results ==")
         view = [{"run": r["run_id"], "status": r.get("status"),
-                 **{metric_short(k): v for k, v in
-                    key_metrics_of(r.get("final_metrics") or {}).items()}}
+                 **{metric_short(k): v for k, v in key_metrics_of(r).items()}}
                 for r in new]
         cols = sorted({c for v in view for c in v} - {"run", "status"})
         print(table(view, ["run", "status"] + cols))
@@ -241,19 +251,21 @@ def cmd_sweep(args) -> int:
 
 
 def cmd_cite(args) -> int:
-    import cvq.models, cvq.tasks  # noqa: F401  — register everything
-    from cvq.registry import meta as reg_meta
+    from imagelab.registry import meta as reg_meta
+    from imagelab.trainer import project_imports, resolve_task
+    project_imports()
     cfg = yaml.safe_load(Path(args.config).read_text())
-    m = cfg.get("model", {})
-    used = [("task", cfg.get("task", "tokenizer")),
-            ("encoder", m.get("encoder_type", "cnn")),
-            ("quantizer", m.get("quant_type", "ibq")),
-            ("decoder", m.get("decoder_type", "vqgan")),
-            ("ar_head", m.get("head_type", "softmax"))]
+    spec = cfg.get("task")
+    if not spec:
+        print(f"{args.config} has no `task:` key")
+        return 1
+    cls = resolve_task(str(spec), Path(args.config).resolve().parent)
     print(f"methods used by {args.config}:")
-    for kind, name in used:
+    for kind, name in cls.cite_components(cfg):
         paper = reg_meta(kind, name).get("paper")
-        print(f"  {kind:10s} {name:10s} {paper or '(no reference registered)'}")
+        if kind == "task" and not paper:
+            paper = cls.paper                  # unregistered (file-path) tasks declare it
+        print(f"  {kind:10s} {name:14s} {paper or '(no reference registered)'}")
     return 0
 
 
@@ -287,7 +299,7 @@ def main(argv=None) -> int:
     p = sub.add_parser("check", help="contract probes for a component (~seconds)")
     p.add_argument("kind"); p.add_argument("name")
     p.add_argument("--kwargs", default="", help="YAML dict of constructor kwargs")
-    p = sub.add_parser("new", help="scaffold a new component file")
+    p = sub.add_parser("new", help="scaffold a component / a runnable task project")
     p.add_argument("kind"); p.add_argument("name")
     p = sub.add_parser("cite", help="paper references for a config's components")
     p.add_argument("config")
@@ -300,7 +312,7 @@ def main(argv=None) -> int:
     if args.cmd == "board":
         return cmd_board(args)
     if args.cmd == "gallery":
-        from cvq.lab.gallery import build_gallery
+        from imagelab.lab.gallery import build_gallery
         out = build_gallery(Path(args.out) if args.out else None)
         print(f"wrote {out} — open it in a browser")
         return 0
@@ -309,11 +321,15 @@ def main(argv=None) -> int:
     if args.cmd == "sweep":
         return cmd_sweep(args)
     if args.cmd == "check":
-        from cvq.lab.checkers import run_checks
+        from imagelab.lab.probes import run_checks
+        from imagelab.trainer import project_imports
+        project_imports()                      # load the project's checkers + components
         kw = yaml.safe_load(args.kwargs) if args.kwargs else {}
         return run_checks(args.kind, args.name, kw or {})
     if args.cmd == "new":
-        from cvq.lab.scaffold import scaffold
+        from imagelab.lab.scaffold import scaffold
+        from imagelab.trainer import project_imports
+        project_imports()                      # load the project's scaffolds
         return scaffold(args.kind, args.name)
     if args.cmd == "cite":
         return cmd_cite(args)

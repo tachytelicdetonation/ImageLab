@@ -10,7 +10,7 @@ import pytest
 import torch
 
 from cvq.config import ConfigError, from_dict
-from cvq.registry import available, build, get, register
+from imagelab.registry import available, build, get, register
 
 
 def base_cfg(**model_overrides):
@@ -185,7 +185,7 @@ def test_ar_head_contract(name):
 # data: split + overfit clamp
 # --------------------------------------------------------------------------- #
 def test_record_split_is_stable_and_per_item():
-    from cvq.data.dataset import record_split
+    from imagelab.data.dataset import record_split
     recs = [{"file": f"img_{i:04d}.png"} for i in range(1000)]
     splits = [record_split(r, 0.1) for r in recs]
     frac = splits.count("val") / len(splits)
@@ -199,7 +199,7 @@ def test_record_split_is_stable_and_per_item():
 
 
 def test_overfit_dataset_clamps_and_repeats():
-    from cvq.data.dataset import OverfitDataset
+    from imagelab.data.dataset import OverfitDataset
 
     class DS(torch.utils.data.Dataset):
         records = [{"file": f"{i}.png", "dataset": "all"} for i in range(10)]
@@ -220,12 +220,15 @@ def test_overfit_dataset_clamps_and_repeats():
 # lab layer: tiers, overrides, naming, ledger
 # --------------------------------------------------------------------------- #
 def test_tier_overfit_transforms_config():
-    from cvq.lab.tiers import apply_overrides, apply_tier
+    from imagelab.lab.tiers import apply_overrides, apply_tier
     cfg = base_cfg()
     steps = apply_tier(cfg, "overfit")
     assert steps == 300
     assert cfg["train"]["overfit_n"] == 1
     assert cfg["data"]["hflip"] is False
+    # cvq's own tier hook adds its FID hygiene on top of the generic transforms
+    from cvq.tasks.base import Task as CVQTask
+    assert CVQTask.apply_tier(cfg, "overfit") is None
     assert cfg["train"]["val_fid"] is False
     # explicit --set wins over the tier
     deltas = apply_overrides(cfg, ["train.overfit_n=4", "model.quant_type=lfq"])
@@ -235,17 +238,18 @@ def test_tier_overfit_transforms_config():
 
 
 def test_auto_name_encodes_deltas():
-    from cvq.lab.tiers import auto_name
+    from imagelab.lab.tiers import auto_name
     n = auto_name("tok_inet", "overfit", {"train.lr": 0.0002, "model.quant_type": "lfq"})
     assert n == "tok_inet_overfit_lr-0.0002_quant_type-lfq"
 
 
 def test_rundir_ledger_roundtrip(tmp_path):
-    from cvq.lab.rundir import RunDir, ledger_rows
-    rc = from_dict(base_cfg())
+    from imagelab.lab.rundir import RunDir, ledger_rows
     rd = RunDir.create("test_run", root=tmp_path)
     rd.start(name="test_run", task="tokenizer", config_path="x.yaml", tier="smoke",
-             deltas={"train.lr": 1e-4}, rc=rc)
+             deltas={"train.lr": 1e-4}, resolved={"task": "tokenizer", "train": {}},
+             seed=0, device="cpu", amp="none",
+             key_metrics=["val/recon_l2_full"], higher_is_better=[])
     assert (rd.dir / "config.yaml").exists()
     rows = ledger_rows(tmp_path)
     assert len(rows) == 1 and rows[0]["status"] == "running"
@@ -255,16 +259,28 @@ def test_rundir_ledger_roundtrip(tmp_path):
     assert len(rows) == 1                            # last row per run_id wins
     assert rows[0]["status"] == "done"
     assert rows[0]["final_metrics"]["val/recon_l2_full"] == 0.5
+    assert rows[0]["key_metrics"] == ["val/recon_l2_full"]   # declarations travel with the run
     meta = (rd.dir / "meta.json").read_text()
     assert "git" in meta and "steps_per_sec" in meta
 
 
 def test_overfit_verdict_gates():
-    from cvq.lab.criteria import overfit_verdict
-    assert overfit_verdict("tokenizer", {"val/recon_l2_full": 0.001})[0] == "pass"
-    assert overfit_verdict("tokenizer", {"val/recon_l2_full": 0.2})[0] == "fail"
-    assert overfit_verdict("car", {"car/token_acc": 0.99})[0] == "pass"
-    assert overfit_verdict("car", {})[0] == "unknown"
+    from imagelab.lab.criteria import gate_verdict
+    gate = ("val/recon_l2_full", "<=", 0.01)
+    assert gate_verdict(gate, {"val/recon_l2_full": 0.001})[0] == "pass"
+    assert gate_verdict(gate, {"val/recon_l2_full": 0.2})[0] == "fail"
+    assert gate_verdict(("car/token_acc", ">=", 0.9), {"car/token_acc": 0.99})[0] == "pass"
+    assert gate_verdict(("car/token_acc", ">=", 0.9), {})[0] == "unknown"
+    assert gate_verdict(None, {"x": 1})[0] == "unknown"
+
+
+def test_cvq_tasks_declare_their_gates():
+    """The old central OVERFIT_GATES table now lives ON the task classes."""
+    import cvq.tasks  # noqa: F401
+    from imagelab.registry import get
+    assert get("task", "tokenizer").overfit_gate == ("val/recon_l2_full", "<=", 0.01)
+    assert get("task", "car").overfit_gate == ("car/token_acc", ">=", 0.90)
+    assert get("task", "e2e").key_metrics[0] == "val/rFID"
 
 
 # --------------------------------------------------------------------------- #

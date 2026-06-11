@@ -26,7 +26,7 @@ from contextlib import nullcontext
 import torch
 from torch import nn
 
-from cvq.registry import register
+from imagelab.registry import register
 
 
 def _no_autocast(t: torch.Tensor):

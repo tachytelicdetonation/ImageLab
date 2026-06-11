@@ -15,22 +15,30 @@ import torch
 from torch.utils.data import DataLoader
 
 from cvq.data.car_dataset import CaptionedImageDataset, CARCollate
-from cvq.data.dataset import OverfitDataset
+from imagelab.data.dataset import OverfitDataset
 from cvq.eval.evaluator import GroupedEvaluator
 from cvq.factory import (build_car, build_conditioning, build_discriminator,
                          build_text_tokenizer, build_tokenizer)
 from cvq.losses.losses import CVQLoss
 from cvq.nested_dropout import HybridUniformPolicy, channel_weights
-from cvq.registry import register
+from imagelab.registry import register
 from cvq.tasks.base import StepOutput, Task
-from cvq.training_loop import split_decay_groups, warmup_lr_lambda
+from imagelab.loop import split_decay_groups, warmup_lr_lambda
 
 
 @register("task", "e2e", paper="arXiv:2605.00503")
 class E2ETask(Task):
+    name = "e2e"
     gan = True
     ckpt_prefix = "e2e"
     latest_name = "e2e_latest.pt"
+    # YOURS TO TUNE — the overfit kill gate + what lab runs/board/compare lead with.
+    overfit_gate = ("val/recon_l2_full", "<=", 0.01)
+    key_metrics = ["val/rFID", "val/recon_l2_full", "eval/combined/token_acc",
+                   "eval/all/token_acc"]
+    higher_is_better = frozenset({"eval/combined/token_acc", "eval/all/token_acc",
+                                  "eval/combined/bit_acc", "eval/all/bit_acc",
+                                  "val/PSNR", "val/SSIM", "codebook/usage"})
 
     def setup(self):
         rc, t, m, l, device = self.rc, self.rc.train, self.rc.model, self.rc.loss, self.device

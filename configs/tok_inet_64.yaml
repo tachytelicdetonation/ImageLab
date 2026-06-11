@@ -1,7 +1,7 @@
 task: tokenizer
 # BLESSED BASE CONFIG — CVQ tokenizer (Fork A: IBQ) on ImageNette @ 64px.
 #
-#   python -m cvq.data.download_imagenette --size 64        # once (~100MB, Apache-2.0)
+#   python -m imagelab.data.download_imagenette --size 64        # once (~100MB, Apache-2.0)
 #   lab run configs/tok_inet_64.yaml --tier smoke           # does it execute?  (~30s)
 #   lab run configs/tok_inet_64.yaml --tier overfit         # can it learn?     (~min)
 #   lab run configs/tok_inet_64.yaml --tier fast            # vs baseline?      (2k steps)

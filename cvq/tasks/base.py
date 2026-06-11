@@ -1,77 +1,85 @@
 """
-Task — what varies between training runs. The trainer (cvq/trainer.py) owns the spine
-(config, seed, device, checkpoint store, logger, resume, loop, final save); a Task
-declares the models, the per-step losses, and the eval callbacks.
+cvq's Task base — the bridge between the generic imagelab seam and cvq's typed config.
 
-To add a new training recipe: subclass Task, decorate with @register("task", "myname"),
-import it from cvq/tasks/__init__.py, and run `python -m cvq.trainer --task myname`.
+imagelab's trainer hands every task (core, raw, args, device, rng); this base turns
+`raw` into cvq's fully-typed RunConfig (cvq/config.py — defaults + EXPERIMENT
+GUARDRAILS) so the recipes keep their `self.rc.model.codebook_size`-style access.
+cvq is deliberately a *consumer* of the framework: everything here is something any
+project can do for itself (own config schema, own CLI flags, own tier tweaks).
+
+To add a cvq training recipe: subclass Task, decorate with @register("task", "myname"),
+import it from cvq/tasks/__init__.py, and set `task: myname` in a config.
 """
 
 from __future__ import annotations
 
+import dataclasses
+
 import torch
 
-from cvq.config import RunConfig
-from cvq.training_loop import StepOutput  # noqa: F401  (re-export for task modules)
+import imagelab.task
+from cvq.config import RunConfig, from_dict
+from imagelab.loop import StepOutput  # noqa: F401  (re-export for task modules)
 
 
-class Task:
-    gan: bool = False              # True -> trainer wraps generator/discriminator_fn in GANStep
-    ckpt_prefix: str = "run"
-    latest_name: str = "latest.pt"
-    has_val: bool = False          # True -> trainer wires val_fn into the loop cadence
+class Task(imagelab.task.Task):
+    def __init__(self, core, raw: dict, args, device: str, rng: torch.Generator):
+        super().__init__(core, raw, args, device, rng)
+        # validate_config already ran (loudly) at load time; build quietly here.
+        self.rc: RunConfig = from_dict(raw, quiet=True)
+        # The trainer resolves artifact dirs (run dir unless YAML-pinned) into core.out.
+        self.rc.out.ckpt_dir = core.out.ckpt_dir
+        self.rc.out.sample_dir = core.out.sample_dir
+        self.rc.out.run_dir = core.out.run_dir
+        self.rc.out.keep_last = core.out.keep_last
 
-    def __init__(self, rc: RunConfig, args, device: str, rng: torch.Generator):
-        self.rc = rc
-        self.args = args
-        self.device = device
-        self.rng = rng
-        # Injected by the trainer after setup(), before the loop:
-        self.store = None          # CheckpointStore
-        self.logger = None         # RunLogger
-        # Tasks that run evals overwrite this each time; the trainer ships the final
-        # value to the run dir + ledger (the run's "result" row).
-        self.last_val_metrics: dict = {}
-        # Populated by setup():
-        self.dataloader = None
-        self.optimizers: list = []
-        self.schedulers: list = []
-        self.gen_params: list = []
-        self.disc_params = None    # GAN tasks set this
-        self.disc = None           # GAN tasks set this
+    # ---- class-level hooks ---------------------------------------------- #
+    @classmethod
+    def validate_config(cls, raw: dict) -> None:
+        from_dict(raw)              # cvq's full schema: warns on unknowns, raises on invalid
 
-    # ------------------------------------------------------------------ #
-    def setup(self):
-        """Build datasets, models, losses, optimizers. Construction ORDER inside setup
-        must be stable: it determines the global-RNG stream, and a fixed seed should keep
-        producing the same initialization run over run."""
-        raise NotImplementedError
-
-    # ---- per-step work (gan=False tasks implement step_fn; gan=True the other two) ----
-    def step_fn(self, batch, step) -> StepOutput:
-        raise NotImplementedError
-
-    def generator_fn(self, batch, step) -> StepOutput:
-        raise NotImplementedError
-
-    def discriminator_fn(self, batch, step, extras):
-        raise NotImplementedError
-
-    # ---- cadenced callbacks ----
-    def sample_fn(self, step):
+    @classmethod
+    def apply_tier(cls, cfg: dict, tier: str):
+        # cvq-specific tier hygiene on top of the generic transforms:
+        # FID is meaningless at probe scale (and undefined over one repeated image).
+        if tier in ("smoke", "overfit"):
+            cfg.setdefault("train", {})["val_fid"] = False
         return None
 
-    def val_fn(self, step):
-        return {}, {}
+    @classmethod
+    def add_args(cls, parser) -> None:
+        parser.add_argument("--tokenizer_ckpt", default="",
+                            help="tokenizer checkpoint (car: required source; "
+                                 "e2e: optional warm start)")
 
+    @classmethod
+    def resolved_config(cls, core, raw: dict) -> dict:
+        """Every cvq default materialized — what the run ACTUALLY used."""
+        rc = from_dict(raw, quiet=True)
+        rc.out.ckpt_dir, rc.out.sample_dir = core.out.ckpt_dir, core.out.sample_dir
+        rc.out.run_dir, rc.out.keep_last = core.out.run_dir, core.out.keep_last
+        out = {"task": rc.task}
+        for f in dataclasses.fields(rc):
+            if f.name not in ("task", "raw"):
+                out[f.name] = dataclasses.asdict(getattr(rc, f.name))
+        return out
+
+    @classmethod
+    def cite_components(cls, cfg: dict) -> list:
+        m = cfg.get("model", {}) or {}
+        return [("task", cfg.get("task", cls.name)),
+                ("encoder", m.get("encoder_type", "cnn")),
+                ("quantizer", m.get("quant_type", "ibq")),
+                ("decoder", m.get("decoder_type", "vqgan")),
+                ("ar_head", m.get("head_type", "softmax"))]
+
+    # ---- instance helpers ------------------------------------------------ #
     def grad_clip(self) -> float | None:
         return self.rc.train.grad_clip
 
     def param_counts(self) -> dict:
-        """Per-component parameter counts (millions) for the run's fairness bookkeeping —
-        an architecture swap that silently doubles the parameter budget should be visible
-        right next to its metrics. Components are found by their conventional attribute
-        names; subclasses with exotic structure can override."""
+        """cvq detail on top of the generic per-module counts: tokenizer swaps should
+        show their encoder/quantizer/decoder budgets right next to the metrics."""
         import torch.nn as nn
         counts = {}
         for attr in ("tok", "car", "disc", "dino"):
@@ -85,22 +93,3 @@ class Task:
                 if isinstance(m, nn.Module):
                     counts[f"tok.{sub}"] = round(sum(p.numel() for p in m.parameters()) / 1e6, 3)
         return counts
-
-    # ---- checkpointing ----
-    def checkpoint_state(self) -> tuple[dict, dict, list[str]]:
-        """(model_state, opt_state, latest_model_keys) for CheckpointStore.save."""
-        raise NotImplementedError
-
-    def ckpt_fn(self, step, epoch):
-        model_state, opt_state, latest_keys = self.checkpoint_state()
-        path = self.store.save(step, epoch, self.rc.raw, model_state=model_state,
-                               opt_state=opt_state, latest_model_keys=latest_keys)
-        print(f"  saved {path.name}")
-
-    def load_resume(self, ck: dict) -> tuple[int, int]:
-        """Restore model/optimizer state from a resumable checkpoint.
-        Returns (start_step, start_epoch)."""
-        raise NotImplementedError
-
-    def finalize(self, final_step: int):
-        """Optional end-of-run work (e.g. a final full validation)."""

@@ -14,11 +14,11 @@ from pathlib import Path
 import torch
 from torchvision.utils import make_grid, save_image
 
-from cvq.checkpoint import CheckpointStore
+from imagelab.checkpoint import CheckpointStore
 from cvq.config import ModelConfig, _section
 from cvq.factory import (build_car, build_conditioning, build_text_tokenizer,
                          build_tokenizer)
-from cvq.utils import denorm, resolve_device
+from imagelab.utils import denorm, resolve_device
 
 
 @torch.no_grad()

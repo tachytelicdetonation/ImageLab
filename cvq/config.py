@@ -202,8 +202,9 @@ def _section(cls, name: str, d: dict | None, warnings: list[str]):
     return cls(**d)
 
 
-def from_dict(cfg: dict, strict: bool = False) -> RunConfig:
-    """Build a RunConfig from a parsed YAML dict. `cfg` is kept verbatim as `.raw`."""
+def from_dict(cfg: dict, strict: bool = False, quiet: bool = False) -> RunConfig:
+    """Build a RunConfig from a parsed YAML dict. `cfg` is kept verbatim as `.raw`.
+    `quiet` suppresses warning prints (for re-parses after a loud validate_config)."""
     warnings: list[str] = []
     sections = {key: _section(cls, key, cfg.get(key), warnings)
                 for key, cls in _SECTIONS.items()}
@@ -212,8 +213,9 @@ def from_dict(cfg: dict, strict: bool = False) -> RunConfig:
         warnings.append(f"config: unknown top-level section '{k}' (ignored)")
     rc = RunConfig(task=cfg.get("task"), raw=cfg, **sections)
     warnings += validate(rc)
-    for w in warnings:
-        print(f"[config] WARNING: {w}")
+    if not quiet:
+        for w in warnings:
+            print(f"[config] WARNING: {w}")
     if strict and warnings:
         raise ConfigError("strict mode: warnings above are fatal")
     return rc

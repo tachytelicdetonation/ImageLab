@@ -19,18 +19,27 @@ jobs:
           uv venv
           uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
           uv pip install -e . --group dev
-      - name: Seam tests (no network, no datasets)
+      - name: Seam tests (framework + cvq; no network, no datasets)
         run: uv run --no-sync pytest tests/ -q
       - name: Contract probes for every builtin component
         run: |
-          uv run --no-sync python -m cvq.lab check quantizer ibq
-          uv run --no-sync python -m cvq.lab check quantizer lfq
-          uv run --no-sync python -m cvq.lab check quantizer fsq --kwargs "levels: [2,2,2,2,2,2]"
-          uv run --no-sync python -m cvq.lab check ar_head softmax
-          uv run --no-sync python -m cvq.lab check ar_head mbm
-          uv run --no-sync python -m cvq.lab check encoder cnn
-          uv run --no-sync python -m cvq.lab check decoder vqgan
-      - name: Scaffold tutorial cannot rot (lab new -> lab check)
+          uv run --no-sync python -m imagelab.lab check task tokenizer
+          uv run --no-sync python -m imagelab.lab check task e2e
+          uv run --no-sync python -m imagelab.lab check task car
+          uv run --no-sync python -m imagelab.lab check quantizer ibq
+          uv run --no-sync python -m imagelab.lab check quantizer lfq
+          uv run --no-sync python -m imagelab.lab check quantizer fsq --kwargs "levels: [2,2,2,2,2,2]"
+          uv run --no-sync python -m imagelab.lab check ar_head softmax
+          uv run --no-sync python -m imagelab.lab check ar_head mbm
+          uv run --no-sync python -m imagelab.lab check encoder cnn
+          uv run --no-sync python -m imagelab.lab check decoder vqgan
+      - name: Scaffolds cannot rot (lab new -> lab check / smoke run)
         run: |
-          uv run --no-sync python -m cvq.lab new quantizer ci_scratch_q
-          uv run --no-sync python -m cvq.lab check quantizer ci_scratch_q
+          uv run --no-sync python -m imagelab.lab new quantizer ci_scratch_q
+          uv run --no-sync python -m imagelab.lab check quantizer ci_scratch_q
+          uv run --no-sync python -m imagelab.lab new task ci_scratch_task
+          uv run --no-sync python -m imagelab.trainer --config ci_scratch_task/config.yaml --tier smoke
+      - name: Example tasks resolve and pass contract probes
+        run: |
+          uv run --no-sync python -m imagelab.lab check task examples/ddpm/task.py:DDPMTask
+          uv run --no-sync python -m imagelab.lab check task examples/rectified_flow/task.py:RectifiedFlowTask

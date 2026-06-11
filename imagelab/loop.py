@@ -1,5 +1,5 @@
 """
-TrainLoop — the scaffolding three training scripts used to copy-paste.
+TrainLoop — the scaffolding every training script otherwise copy-pastes.
 
 Owns:
   * AMP autocast context, gradient accumulation boundary,
@@ -8,12 +8,12 @@ Owns:
   * wandb init + scalar/image logging (with TensorBoard mirror),
   * resume + final-step bookkeeping.
 
-The variable part of each script is `step_fn(batch, step) -> StepOutput`. Recon-only,
-NTP-only, joint-EOSTok all express their per-step work behind the same seam.
+The variable part is `step_fn(batch, step) -> StepOutput` — a recon objective, a
+diffusion noise-prediction MSE, an AR next-token loss all express their per-step work
+behind the same seam.
 
-Two adapters at the GAN seam: GANStep wraps the generator/discriminator choreography so
-recon-only and joint-E2E share it; NoGANStep is the same loop without the disc dance for
-train_car (frozen tokenizer + CAR-only).
+Two adapters at the GAN seam: GANStep wraps the generator/discriminator choreography;
+NoGANStep is the same loop without the disc dance (the common case).
 """
 
 from __future__ import annotations
@@ -106,10 +106,10 @@ class RunLogger:
             if mode == "online" and not os.environ.get("WANDB_API_KEY"):
                 print("WANDB_API_KEY not set -> falling back to offline mode")
                 mode = "offline"
-            wandb.init(project=wcfg.get("project", "cvq-pokemon"),
+            wandb.init(project=wcfg.get("project", "imagelab"),
                        entity=wcfg.get("entity"), name=wcfg.get("name"),
                        mode=mode, config=cfg)
-            print(f"wandb: logging to project '{wcfg.get('project', 'cvq-pokemon')}' (mode={mode})")
+            print(f"wandb: logging to project '{wcfg.get('project', 'imagelab')}' (mode={mode})")
         self.wcfg = wcfg
         self.writer = None
         if _HAS_TB and run_dir:
@@ -264,7 +264,7 @@ class TrainLoop:
         disc optimizer (the LAST entry, if disc_params is given) which is gated by
         disc_start_step — matches the original behaviour in train.py / train_e2e.py.
         """
-        from cvq.utils import grad_norm
+        from imagelab.utils import grad_norm
 
         step = start_step
         t0 = time.time()

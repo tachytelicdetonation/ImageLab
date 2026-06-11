@@ -20,8 +20,8 @@ from torch.utils.data import DataLoader, Subset
 from torchvision.utils import make_grid, save_image
 
 from cvq.conditioning import Conditioning
-from cvq.training_loop import autocast_ctx
-from cvq.utils import denorm
+from imagelab.loop import autocast_ctx
+from imagelab.utils import denorm
 
 
 class GroupedEvaluator:

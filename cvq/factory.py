@@ -26,7 +26,7 @@ from cvq.conditioning import Conditioning
 from cvq.models.car import CAR
 from cvq.models.discriminator import NLayerDiscriminator
 from cvq.models.tokenizer import CVQTokenizer
-from cvq.registry import build
+from imagelab.registry import build
 
 
 def _model_data(cfg) -> tuple[ModelConfig, DataConfig, dict]:

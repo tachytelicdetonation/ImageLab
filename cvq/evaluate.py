@@ -19,14 +19,14 @@ from pathlib import Path
 
 import torch
 
-from cvq.checkpoint import CheckpointStore
+from imagelab.checkpoint import CheckpointStore
 from cvq.config import from_dict
 from cvq.data.car_dataset import CARCollate, CaptionedImageDataset
-from cvq.data.dataset import ManifestImageDataset
+from imagelab.data.dataset import ManifestImageDataset
 from cvq.eval import GroupedEvaluator, validate
 from cvq.factory import (build_car, build_conditioning, build_text_tokenizer,
                          build_tokenizer)
-from cvq.utils import describe_device, resolve_device
+from imagelab.utils import describe_device, resolve_device
 
 
 @torch.no_grad()

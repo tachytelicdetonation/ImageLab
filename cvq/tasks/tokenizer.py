@@ -12,23 +12,29 @@ import torch
 from torch.utils.data import DataLoader
 from torchvision.utils import make_grid, save_image
 
-from cvq.data.dataset import ManifestImageDataset, OverfitDataset
+from imagelab.data.dataset import ManifestImageDataset, OverfitDataset
 from cvq.eval.metrics import validate
 from cvq.factory import build_discriminator, build_tokenizer
 from cvq.losses.losses import CVQLoss
 from cvq.nested_dropout import HybridUniformPolicy
-from cvq.registry import register
+from imagelab.registry import register
 from cvq.tasks.base import StepOutput, Task
-from cvq.training_loop import split_decay_groups, warmup_lr_lambda
-from cvq.utils import denorm
+from imagelab.loop import split_decay_groups, warmup_lr_lambda
+from imagelab.utils import denorm
 
 
 @register("task", "tokenizer", paper="arXiv:2605.26089")
 class TokenizerTask(Task):
+    name = "tokenizer"
     gan = True
     ckpt_prefix = "cvq"
     latest_name = "latest.pt"
     has_val = True
+    # YOURS TO TUNE — the overfit kill gate + what lab runs/board/compare lead with.
+    # A healthy tokenizer drives recon L2 on a single image to ~1e-3 within ~300 steps.
+    overfit_gate = ("val/recon_l2_full", "<=", 0.01)
+    key_metrics = ["val/rFID", "val/recon_l2_full", "val/lpips"]
+    higher_is_better = frozenset({"val/PSNR", "val/SSIM", "codebook/usage"})
 
     def setup(self):
         rc, t, l, device = self.rc, self.rc.train, self.rc.loss, self.device

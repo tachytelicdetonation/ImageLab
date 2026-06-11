@@ -4,8 +4,8 @@ Component registry — the extension seam for casual architecture experiments.
 Every swappable component (quantizer, AR head, encoder, decoder, task, ...) registers
 itself under a (kind, name) pair. Configs then select architectures by name:
 
-    # cvq/models/my_quantizer.py
-    from cvq.registry import register
+    # my_quantizer.py (anywhere that gets imported)
+    from imagelab.registry import register
 
     @register("quantizer", "lfq")
     class ChannelLFQ(nn.Module):
@@ -15,14 +15,15 @@ itself under a (kind, name) pair. Configs then select architectures by name:
     model:
       quant_type: lfq
 
-Nothing else changes: the factory builds whatever name the config asks for. Registration
-happens at import time, so built-in components are imported (and thus registered) by
-`cvq/models/__init__.py`. A third-party module just needs to be imported once before the
-factory runs — drop it in cvq/models/ and add it to that __init__, or import it from your
-config-loading script.
+Registration happens at import time, so a module just needs to be imported once before
+anything builds by name. Projects declare their modules in pyproject.toml:
 
-Kinds in use today: "quantizer", "ar_head", "encoder", "decoder", "task".
-New kinds need no declaration — the first register() call creates them.
+    [tool.imagelab]
+    imports = ["myproject.models", "myproject.tasks"]
+
+and the trainer/CLI import them automatically. Kinds are open strings — "task",
+"quantizer", "ar_head", whatever your project's anatomy needs; the first register()
+call creates a kind. The framework itself only ever looks up "task".
 """
 
 from __future__ import annotations

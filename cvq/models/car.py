@@ -99,7 +99,7 @@ class CAR(nn.Module):
         self.boi.data = self.boi.data.to(backbone_dtype)
         # Output head from the registry: "softmax" (EOSTok/Fork A), "mbm" (BAR/Fork B), or
         # any head registered under "ar_head" (see cvq/models/heads.py for the contract).
-        from cvq.registry import build
+        from imagelab.registry import build
         self.head = build("ar_head", head_type,
                           hidden=self.hidden, codebook_size=codebook_size,
                           backbone_dtype=backbone_dtype, mbm_depth=mbm_depth,

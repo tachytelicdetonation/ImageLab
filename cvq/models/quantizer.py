@@ -35,7 +35,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from cvq.registry import register
+from imagelab.registry import register
 
 
 def _no_autocast(t: torch.Tensor):

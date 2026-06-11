@@ -8,8 +8,8 @@ Any dataset becomes usable here by writing a directory of the form
                                #  "dataset": <optional source tag>,
                                #  "split": <optional "train"|"val">}
 
-(`cvq/data/download_imagenette.py` produces this layout with `dataset` + `split` tags;
-`cvq/data/download_pokemon.py` produces it without them.)
+(`imagelab/data/download_imagenette.py` produces this layout with `dataset` + `split`
+tags; any script that writes the two files above makes a dataset.)
 
 Train/val splitting: records with an explicit `split` field keep it (ImageNette ships an
 official split). Records without one are assigned by a stable hash of their filename, so
@@ -70,7 +70,7 @@ class ManifestImageDataset(Dataset):
         if not manifest.exists():
             raise FileNotFoundError(
                 f"{manifest} not found — build the dataset first "
-                f"(e.g. `python -m cvq.data.download_pokemon`)."
+                f"(e.g. `python -m imagelab.data.download_imagenette --size 64`)."
             )
         self.records = [json.loads(l) for l in manifest.read_text().splitlines() if l.strip()]
         # Keep only records whose image actually exists at this resolution.

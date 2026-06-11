@@ -5,7 +5,7 @@ inline SVG polylines built from each run's metrics.jsonl, and image grids are re
 relative to the page so it works from a file:// open or a repo checkout.
 
 Image models get judged by eyes as much as numbers; because every run's fixed eval batch
-is the same val images (see tasks/*.py), the grids here are directly comparable.
+is pinned (same held-out samples for every run), the grids here are directly comparable.
 """
 
 from __future__ import annotations
@@ -16,8 +16,8 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
-from cvq.lab.criteria import key_metrics_of
-from cvq.lab.rundir import RUNS_ROOT, ledger_rows
+from imagelab.lab.criteria import key_metrics_of
+from imagelab.lab.rundir import RUNS_ROOT, ledger_rows
 
 # Series never worth a curve in the overview (bookkeeping, not learning signal).
 _SKIP = ("opt/", "sys/", "train/epoch", "train/img_per_s", "train/ar_on",
@@ -85,7 +85,7 @@ def build_gallery(out: Path | None = None) -> Path:
         facts = []
         if r.get("deltas"):
             facts.append("Δ " + " ".join(f"{k}={v}" for k, v in r["deltas"].items()))
-        for k, v in key_metrics_of(r.get("final_metrics") or {}, n=4).items():
+        for k, v in key_metrics_of(r, n=4).items():
             facts.append(f"{k} <b>{v:.4g}</b>" if isinstance(v, (int, float)) else f"{k} {v}")
         facts.append(f"steps {r.get('steps', '?')} · {r.get('wall_min', '?')} min "
                      f"· seed {r.get('seed', '?')}")

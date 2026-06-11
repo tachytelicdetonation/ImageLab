@@ -15,7 +15,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from cvq.registry import register
+from imagelab.registry import register
 
 from .decoder import AttnBlock, Normalize, ResnetBlock, nonlinearity
 

@@ -1,7 +1,7 @@
 [project]
 name = "imagelab"
-version = "0.2.0"
-description = "A small lab for casual image-model experimentation: pluggable components, tiered runs (smoke/overfit/fast/full), and a filesystem ledger that makes results comparable"
+version = "0.3.0"
+description = "A small lab for single-GPU model experimentation: bring your own model/data/loss/metrics, get tiered runs (smoke/overfit/fast/full) and a filesystem ledger that makes results comparable"
 license = { file = "LICENSE" }
 requires-python = ">=3.11"
 dependencies = [
@@ -27,10 +27,16 @@ dependencies = [
 ]
 
 [project.scripts]
-lab = "cvq.lab.cli:main"
+lab = "imagelab.lab.cli:main"
 
 [dependency-groups]
 dev = ["pytest>=8.0"]
+
+# Modules `lab`/the trainer import before resolving registry names — how a project's
+# tasks, components, checkers, and scaffolds get registered. Your own project does the
+# same in ITS pyproject.toml.
+[tool.imagelab]
+imports = ["cvq.models", "cvq.tasks", "cvq.lab.checkers", "cvq.lab.scaffold"]
 
 [tool.uv]
 # Keep the resolver from pulling CUDA-only builds; the default PyPI wheels are MPS-capable on arm64 macOS.
@@ -40,4 +46,4 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["cvq"]
+packages = ["imagelab", "cvq"]

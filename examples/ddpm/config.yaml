@@ -1,0 +1,40 @@
+# DDPM on ImageNette-64 — the blessed diffusion baseline.
+#   python -m imagelab.data.download_imagenette --size 64     # once
+#   lab run examples/ddpm/config.yaml --tier smoke            # executes?      ~30s
+#   lab run examples/ddpm/config.yaml --tier overfit          # learns?        pass/fail
+#   lab run examples/ddpm/config.yaml --tier fast             # vs baseline?   2k steps
+#   lab run examples/ddpm/config.yaml                         # the real run
+
+task: task.py:DDPMTask     # resolved relative to this file — no packaging needed
+
+data:
+  root: data/imagenette
+  size: 64
+  hflip: true
+  val_fraction: 0.1        # explicit manifest `split` (ImageNette official) wins anyway
+
+model:
+  ch: 64
+  ch_mult: [1, 2, 2]
+  num_res_blocks: 2
+  timesteps: 1000
+  beta_start: 1.0e-4
+  beta_end: 0.02
+  ema_decay: 0.999
+  sample_steps: 50         # DDIM steps for the sample grids
+
+train:
+  batch_size: 64
+  epochs: 300
+  lr: 2.0e-4
+  weight_decay: 0.0
+  warmup_steps: 500
+  log_every: 50
+  sample_every: 1000
+  val_every: 500
+  ckpt_every: 2000
+  num_workers: 4
+  seed: 0
+
+wandb:
+  enabled: false

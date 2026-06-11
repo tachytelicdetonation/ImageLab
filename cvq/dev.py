@@ -47,7 +47,7 @@ class quick:
     @staticmethod
     def quantizer(name: str, token_dim: int = 16, codebook_size: int = 64, **kwargs):
         import cvq.models  # noqa: F401
-        from cvq.registry import build
+        from imagelab.registry import build
         torch.manual_seed(0)
         return build("quantizer", name, token_dim=token_dim,
                      codebook_size=codebook_size, **kwargs)
@@ -55,7 +55,7 @@ class quick:
     @staticmethod
     def ar_head(name: str, hidden: int = 32, codebook_size: int = 64, **kwargs):
         import cvq.models  # noqa: F401
-        from cvq.registry import build
+        from imagelab.registry import build
         torch.manual_seed(0)
         kw = {"backbone_dtype": torch.float32, "mbm_depth": 1, "mbm_heads": 2,
               "mbm_infer_steps": 2, **kwargs}
@@ -80,12 +80,12 @@ class quick:
         """(n,3,size,size) in [-1,1]: first n val images from the local dataset, or random
         tensors (with a notice) when no dataset is downloaded."""
         try:
-            from cvq.data.dataset import ManifestImageDataset
+            from imagelab.data.dataset import ManifestImageDataset
             ds = ManifestImageDataset(root, size=size, hflip=False, split="val")
             return torch.stack([ds[i]["image"] for i in range(min(n, len(ds)))], 0)
         except (FileNotFoundError, RuntimeError):
             print(f"(no dataset at {root}/ — returning random tensors; "
-                  f"`python -m cvq.data.download_imagenette` for real ones)")
+                  f"`python -m imagelab.data.download_imagenette` for real ones)")
             torch.manual_seed(0)
             return torch.rand(n, 3, size, size) * 2 - 1
 
@@ -113,7 +113,7 @@ class quick:
         """Save a grid of (B,3,H,W) [-1,1] images and `open` it (macOS)."""
         from torchvision.utils import make_grid, save_image
 
-        from cvq.utils import denorm
+        from imagelab.utils import denorm
         if x.dim() == 3:
             x = x[None]
         grid = make_grid(denorm(x.detach().float().cpu()) if denormalize else x,

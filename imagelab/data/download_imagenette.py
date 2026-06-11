@@ -1,8 +1,8 @@
 """
 Build the blessed benchmark dataset: ImageNette (+ optionally ImageWoof) from fastai.
 
-    python -m cvq.data.download_imagenette --size 64                 # imagenette only
-    python -m cvq.data.download_imagenette --size 64 --which both    # + imagewoof tags
+    python -m imagelab.data.download_imagenette --size 64                 # imagenette only
+    python -m imagelab.data.download_imagenette --size 64 --which both    # + imagewoof tags
 
 Why this is the default for public results: Apache-2.0 licensed (it's the fastai
 imagenette repo's subset of ImageNet), small enough for casual runs, and the
@@ -130,7 +130,7 @@ def main():
     n_val = sum(r["split"] == "val" for r in records)
     print(f"\nwrote {len(records)} records ({len(records) - n_val} train / {n_val} val) "
           f"-> {root}/manifest.jsonl")
-    print(f"train: python -m cvq.trainer --config configs/tok_inet_64.yaml")
+    print(f"train: lab run configs/tok_inet_64.yaml  (or examples/ddpm/config.yaml)")
 
 
 if __name__ == "__main__":

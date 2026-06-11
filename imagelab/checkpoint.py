@@ -30,12 +30,12 @@ class CheckpointStore:
 
     Args:
         ckpt_dir: directory to write into (created if missing).
-        prefix: filename prefix for resumable checkpoints (e.g. "cvq", "car", "e2e").
+        prefix: filename prefix for resumable checkpoints (e.g. "ddpm", "car", "e2e").
         latest_name: name of the model-only pointer file (e.g. "latest.pt", "car_latest.pt").
         keep_last: keep this many of the most recent `{prefix}_step*.pt`. 0 = keep all.
     """
 
-    def __init__(self, ckpt_dir: str | Path, prefix: str = "cvq",
+    def __init__(self, ckpt_dir: str | Path, prefix: str = "run",
                  latest_name: str = "latest.pt", keep_last: int = 5):
         self.dir = Path(ckpt_dir)
         self.dir.mkdir(parents=True, exist_ok=True)
