@@ -1,4 +1,4 @@
-# Data & artifacts (anchored to repo root so cvq/data/ source is NOT ignored)
+# Data & artifacts
 /data/
 /checkpoints*/
 /samples/
@@ -11,6 +11,23 @@
 *.ckpt
 /*.png
 !docs/*.png
+
+# Resident research project — kept local on main (full tracked history lives on the
+# cvq-archive branch). The public repo is the framework + examples only.
+/cvq/
+/configs/
+/scripts/
+/RESULTS.md
+/IDEAS.md
+/FUTURE_WORK.md
+/Papers.md
+/requirements-cvq.txt
+
+# Personal box-ops scripts and agent-tool state — never public
+/.launch_box*.sh
+/.setup_box.sh
+/.run_e2e.sh
+/.pi/
 
 # Python
 .venv/

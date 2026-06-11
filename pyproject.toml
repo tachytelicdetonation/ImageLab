@@ -1,49 +1,49 @@
 [project]
 name = "imagelab"
-version = "0.3.0"
+version = "0.4.0"
 description = "A small lab for single-GPU model experimentation: bring your own model/data/loss/metrics, get tiered runs (smoke/overfit/fast/full) and a filesystem ledger that makes results comparable"
 license = { file = "LICENSE" }
 requires-python = ">=3.11"
 dependencies = [
-    # Core DL — torch>=2.4.1 per the CVQ README; MPS (Apple Metal) backend ships in the standard wheels.
+    # torch from PyPI: CUDA-bundled wheels on Linux, MPS-capable wheels on arm64 macOS.
     "torch>=2.4.1",
     "torchvision>=0.19.1",
-    # transformers: needs >=4.52.4 for Qwen3ForCausalLM (the CAR backbone). No longer used
-    # for SigLIP (that path was removed); the only HF model now is Qwen3-0.6B for the CAR.
-    "transformers>=4.52.4",
-    # Perceptual loss used by VQGAN/CVQ reconstruction objective.
-    "lpips>=0.1.4",
-    # Data + utilities
     "pillow>=10.0.0",
-    "numpy>=1.26,<2.3",
-    "requests>=2.31.0",
+    "numpy>=1.26",
     "tqdm>=4.66.0",
     "pyyaml>=6.0",
-    "einops>=0.8.0",
-    # Logging / metrics
-    "tensorboard>=2.16.0",
-    "wandb>=0.17.0",
-    "torchmetrics>=1.4.0",       # rFID, PSNR, SSIM
 ]
+
+[project.optional-dependencies]
+# Experiment-tracking mirrors; the filesystem ledger works without them.
+logging = ["wandb>=0.17.0", "tensorboard>=2.16.0"]
 
 [project.scripts]
 lab = "imagelab.lab.cli:main"
 
 [dependency-groups]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "ruff>=0.8"]
 
-# Modules `lab`/the trainer import before resolving registry names — how a project's
-# tasks, components, checkers, and scaffolds get registered. Your own project does the
-# same in ITS pyproject.toml.
+# Modules the trainer/`lab` import before resolving registry names — how an installed
+# project's tasks, components, checkers, and scaffolds get registered. Point this at
+# your own packages in YOUR pyproject.toml; file-path tasks (task: task.py:Class)
+# need no registration at all.
 [tool.imagelab]
-imports = ["cvq.models", "cvq.tasks", "cvq.lab.checkers", "cvq.lab.scaffold"]
+imports = []
 
-[tool.uv]
-# Keep the resolver from pulling CUDA-only builds; the default PyPI wheels are MPS-capable on arm64 macOS.
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["imagelab", "cvq"]
+packages = ["imagelab"]
