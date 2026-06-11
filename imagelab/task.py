@@ -52,8 +52,10 @@ class Task:
     # overfit_gate: ("metric", "<=" | ">=", threshold) — the `--tier overfit` kill
     # criterion ("can it memorize ONE sample?"). None -> verdict is "unknown".
     overfit_gate: tuple | None = None
-    # key_metrics: ledger/leaderboard columns, in display order.
-    key_metrics: list = []
+    # key_metrics: ledger/leaderboard columns, in display order. (Immutable default on
+    # purpose — a shared class-level list would let one instance's append leak into
+    # every later run in the same process. Override with a list or tuple.)
+    key_metrics: tuple | list = ()
     # metric names where bigger is better (everything else: lower is better).
     higher_is_better: frozenset = frozenset()
 
@@ -64,9 +66,10 @@ class Task:
         self.args = args
         self.device = device
         self.rng = rng
-        # Injected by the trainer after setup(), before the loop:
-        self.store = None          # CheckpointStore
-        self.logger = None         # RunLogger
+        # store/logger are injected by the trainer AFTER setup(), before the loop —
+        # see the guarded properties below.
+        self._store = None         # CheckpointStore
+        self._logger = None        # RunLogger
         # Tasks that run evals overwrite this each time; the trainer ships the final
         # value to the run dir + ledger (the run's "result" row).
         self.last_val_metrics: dict = {}
@@ -77,6 +80,33 @@ class Task:
         self.gen_params: list = []
         self.disc_params = None    # GAN tasks set this
         self.disc = None           # GAN tasks set this
+
+    # ---- trainer-injected services (available in step_fn/val_fn/sample_fn/finalize) --
+    @property
+    def store(self):
+        if self._store is None:
+            raise RuntimeError(
+                "self.store is not available during setup() — the trainer injects it "
+                "afterwards. To warm-start from a checkpoint inside setup(), load the "
+                "file directly (CheckpointStore.load(path)); for resuming a run, "
+                "implement load_resume() and pass --resume.")
+        return self._store
+
+    @store.setter
+    def store(self, value):
+        self._store = value
+
+    @property
+    def logger(self):
+        if self._logger is None:
+            raise RuntimeError(
+                "self.logger is not available during setup() — the trainer injects it "
+                "afterwards. Log from step_fn/val_fn/finalize instead.")
+        return self._logger
+
+    @logger.setter
+    def logger(self, value):
+        self._logger = value
 
     # ---- class-level hooks the trainer calls BEFORE instantiation ------------ #
     @classmethod
@@ -91,7 +121,7 @@ class Task:
 
     @classmethod
     def add_args(cls, parser) -> None:
-        """Declare task-specific CLI flags (e.g. cvq's --tokenizer_ckpt)."""
+        """Declare task-specific CLI flags (e.g. a --pretrained_ckpt path)."""
 
     @classmethod
     def cite_components(cls, cfg: dict) -> list:

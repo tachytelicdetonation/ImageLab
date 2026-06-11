@@ -47,7 +47,7 @@ class CheckpointStore:
         best_path = self.dir / "best.pt"
         if best_path.exists():
             try:
-                prev = torch.load(best_path, map_location="cpu")
+                prev = torch.load(best_path, map_location="cpu", weights_only=True)
                 if "score" in prev and isinstance(prev["score"], (int, float)):
                     self.best_score = float(prev["score"])
             except Exception:
@@ -96,8 +96,11 @@ class CheckpointStore:
 
     # --- load -------------------------------------------------------------- #
     @staticmethod
-    def load(path: str | Path, map_location="cpu") -> dict:
-        return torch.load(str(path), map_location=map_location)
+    def load(path: str | Path, map_location="cpu", weights_only: bool = True) -> dict:
+        """`weights_only=True` (the default) refuses pickled code — checkpoints from
+        anywhere but your own runs should never be able to execute Python on load.
+        Pass `weights_only=False` ONLY for trusted files that need arbitrary objects."""
+        return torch.load(str(path), map_location=map_location, weights_only=weights_only)
 
     # --- helpers ----------------------------------------------------------- #
     def _prune(self):

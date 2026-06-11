@@ -2,9 +2,8 @@
 `lab check <kind> <name>` — component contracts as instant probes, not just CI.
 
 The harness is generic; the probes are a project's own. A project defines what its
-component kinds must satisfy and registers a checker per kind (cvq's quantizer/ar_head
-checkers — shapes, truncate/lookup round-trip, straight-through gradients — are the
-worked example in cvq/lab/checkers.py):
+component kinds must satisfy and registers a checker per kind (e.g. a quantizer
+checker asserting shapes, encode/decode round-trips, straight-through gradients):
 
     from imagelab.lab.probes import Probe, register_checker
 

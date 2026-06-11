@@ -280,6 +280,11 @@ def main(argv=None) -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
+    # Registered for --help only; `lab run ...` is short-circuited above so every
+    # trainer flag (including task-declared ones) forwards untouched.
+    p = sub.add_parser("run", help="train a config: lab run <config> [--tier ...] "
+                                   "(all trainer flags forwarded)")
+    p.add_argument("trainer_args", nargs=argparse.REMAINDER)
     p = sub.add_parser("runs", help="ledger table of all runs")
     p.add_argument("--task", default="")
     p = sub.add_parser("compare", help="config diff + metric diff between two runs")

@@ -77,6 +77,9 @@ def apply_overrides(cfg: dict, pairs: list[str]) -> dict:
         if not sep or not key:
             raise SystemExit(f"--set expects dotted.key=value, got {pair!r}")
         parsed = yaml.safe_load(val)
+        if parsed is None and val not in ("null", "~", "None"):
+            print(f"[lab] WARNING: --set {pair!r} sets {key} to None "
+                  f"(empty/unparseable value) — use {key}=null to silence this")
         node = cfg
         parts = key.split(".")
         for p in parts[:-1]:

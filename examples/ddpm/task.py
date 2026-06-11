@@ -27,7 +27,7 @@ from imagelab.data import ManifestImageDataset, OverfitDataset
 from imagelab.loop import split_decay_groups, warmup_lr_lambda
 from imagelab.utils import denorm
 
-from unet import TinyUNet  # examples/unet.py — sibling import; any nn.Module works
+from unet import TinyUNet  # sibling file in this directory — any nn.Module works
 
 
 class DDPMTask(Task):

@@ -7,8 +7,8 @@ everything scientific: model, data, loss, metrics — declared on ONE class:
 
     from imagelab import Task, StepOutput
 
-See imagelab/task.py for the contract, examples/ for complete model families
-(DDPM, rectified flow), and the cvq package for a full research project built on top.
+See imagelab/task.py for the contract and examples/ for complete model families
+(DDPM, rectified flow) built on it.
 """
 
 from imagelab.config import ConfigError, CoreConfig  # noqa: F401

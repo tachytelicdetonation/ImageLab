@@ -267,19 +267,25 @@ class TrainLoop:
         from imagelab.utils import grad_norm
 
         step = start_step
+        # Accumulation windows are counted globally, NOT per-epoch: an epoch whose batch
+        # count isn't divisible by accum would otherwise zero_grad away the trailing
+        # micro-batches' gradients at the next epoch's first step.
+        micro = 0
         t0 = time.time()
         for epoch in range(start_epoch, epochs):
-            for i, batch in enumerate(dataloader):
-                if i % self.accum == 0:
+            for batch in dataloader:
+                if micro % self.accum == 0:
                     for opt in optimizers:
                         opt.zero_grad(set_to_none=True)
 
                 out = step_runner(batch, step)
 
                 gn_g = gn_d = 0.0
-                if (i + 1) % self.accum == 0:
+                if (micro + 1) % self.accum == 0:
                     if grad_clip is not None and grad_clip > 0:
                         torch.nn.utils.clip_grad_norm_(gen_params, grad_clip)
+                        if disc_params is not None:
+                            torch.nn.utils.clip_grad_norm_(disc_params, grad_clip)
                     gn_g = grad_norm(gen_params)
                     if disc_params is not None:
                         gn_d = grad_norm(disc_params)
@@ -338,6 +344,7 @@ class TrainLoop:
                 if ckpt_fn is not None and step > 0 and step % self.cad.ckpt_every == 0:
                     ckpt_fn(step, epoch)
 
+                micro += 1
                 step += 1
                 if max_steps and step >= max_steps:
                     return step

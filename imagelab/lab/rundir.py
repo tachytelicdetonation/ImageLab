@@ -17,12 +17,15 @@ row per run_id, so appending an updated row "overwrites" without rewriting the f
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
 
-RUNS_ROOT = Path("runs")
+# Resolved relative to the process cwd by convention (run `lab` from your project root);
+# set IMAGELAB_RUNS_ROOT to pin an absolute location instead.
+RUNS_ROOT = Path(os.environ.get("IMAGELAB_RUNS_ROOT", "runs"))
 
 
 def _git_info() -> dict:
@@ -145,9 +148,13 @@ def ledger_rows(root: Path | None = None) -> list[dict]:
         return []
     by_id = {}
     for line in p.read_text().splitlines():
-        if line.strip():
+        if not line.strip():
+            continue
+        try:
             row = json.loads(line)
-            by_id[row.get("run_id")] = row
+        except json.JSONDecodeError:
+            continue       # half-written row from a crash mid-append; skip, don't crash
+        by_id[row.get("run_id")] = row
     return list(by_id.values())
 
 

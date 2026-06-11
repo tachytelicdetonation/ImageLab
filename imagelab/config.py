@@ -4,8 +4,8 @@ out (artifact locations), wandb (mirror logging; read as a raw dict by RunLogger
 
 Everything else in the YAML belongs to the task. The framework never warns about keys
 it doesn't know — they're someone else's schema. Tasks that want strict validation of
-their own sections do it in `Task.validate_config(raw)` (cvq is the worked example:
-it builds its full typed RunConfig there and fails at load time).
+their own sections do it in `Task.validate_config(raw)` — build your typed config
+there and fail at load time, not at step 4000.
 
 Convention keys (interpreted by tiers/tasks, not the loop):
     train.overfit_n       >0: tasks clamp their dataset to the first N samples

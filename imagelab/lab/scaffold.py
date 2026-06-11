@@ -5,8 +5,8 @@ The framework ships the "task" scaffold: a self-contained project directory
 (<name>/task.py + <name>/config.yaml) whose WORKING toy objective passes
 `--tier smoke` and `--tier overfit` as-is — replace the model/data/loss, keep the seams.
 
-Projects register scaffolds for their own component kinds (cvq registers "quantizer"
-and "ar_head") via modules listed under [tool.imagelab] imports:
+Projects register scaffolds for their own component kinds via modules listed under
+[tool.imagelab] imports:
 
     from imagelab.lab.scaffold import register_scaffold
 

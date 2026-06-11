@@ -24,6 +24,7 @@ which this module imports automatically (see project_imports).
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib
 import importlib.util
 import re
@@ -83,12 +84,17 @@ def _import_file(path: Path):
     on sys.path so sibling imports (`from unet import UNet`) work — a project can be a
     plain directory of files."""
     path = path.resolve()
-    name = "_labmod_" + re.sub(r"[^A-Za-z0-9]+", "_", str(path)).strip("_")[-80:]
+    # Hash of the full path, not a truncated slug: two deep paths with the same suffix
+    # must never silently share a module cache entry.
+    digest = hashlib.sha1(str(path).encode()).hexdigest()[:12]
+    name = f"_labmod_{digest}_{re.sub(r'[^A-Za-z0-9]+', '_', path.stem)}"
     if name in sys.modules:
         return sys.modules[name]
     if str(path.parent) not in sys.path:
         sys.path.insert(0, str(path.parent))
     spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise SystemExit(f"could not load task file {path}: not an importable .py file")
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     spec.loader.exec_module(module)
@@ -133,7 +139,7 @@ def resolve_task(spec: str, config_dir: Path | None = None) -> type:
 
 # --------------------------------------------------------------------------- #
 def run(argv=None) -> int:
-    ap = argparse.ArgumentParser(allow_abbrev=False)
+    ap = argparse.ArgumentParser(prog="lab run", allow_abbrev=False)
     ap.add_argument("--config", required=True)
     ap.add_argument("--task", default=None,
                     help="task spec (registered name | file.py:Class | module:Class); "
@@ -166,7 +172,7 @@ def run(argv=None) -> int:
     deltas = apply_overrides(cfg, args.overrides)
     task_cls.validate_config(cfg)            # fail at load, not at step 4000
 
-    # ---- task-declared CLI flags (e.g. cvq's --tokenizer_ckpt) ----
+    # ---- task-declared CLI flags (Task.add_args) ----
     tp = argparse.ArgumentParser(prog=f"task {task_spec!r} flags", allow_abbrev=False)
     task_cls.add_args(tp)
     for k, v in vars(tp.parse_args(extra)).items():
