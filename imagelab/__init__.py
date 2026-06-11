@@ -16,4 +16,4 @@ from imagelab.loop import StepOutput                 # noqa: F401
 from imagelab.registry import available, build, get, meta, register  # noqa: F401
 from imagelab.task import Task                       # noqa: F401
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
