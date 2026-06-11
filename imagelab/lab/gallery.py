@@ -81,7 +81,8 @@ def build_gallery(out: Path | None = None) -> Path:
                 f'<span class="tag">{r.get("tier", "")}</span> '
                 f'<span class="tag st-{r.get("status", "")}">{r.get("status", "")}</span>')
         if r.get("verdict"):
-            head += f' <span class="tag st-{ "done" if r["verdict"] == "pass" else "crashed"}">overfit:{r["verdict"]}</span>'
+            cls = "done" if r["verdict"] == "pass" else "crashed"
+            head += f' <span class="tag st-{cls}">overfit:{r["verdict"]}</span>'
         facts = []
         if r.get("deltas"):
             facts.append("Δ " + " ".join(f"{k}={v}" for k, v in r["deltas"].items()))

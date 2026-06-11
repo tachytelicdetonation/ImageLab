@@ -72,7 +72,7 @@ class ManifestImageDataset(Dataset):
                 f"{manifest} not found — build the dataset first "
                 f"(e.g. `python -m imagelab.data.download_imagenette --size 64`)."
             )
-        self.records = [json.loads(l) for l in manifest.read_text().splitlines() if l.strip()]
+        self.records = [json.loads(ln) for ln in manifest.read_text().splitlines() if ln.strip()]
         # Keep only records whose image actually exists at this resolution.
         self.records = [r for r in self.records if (self.img_dir / r["file"]).exists()]
         if not self.records:

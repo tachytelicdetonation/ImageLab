@@ -130,7 +130,7 @@ def main():
     n_val = sum(r["split"] == "val" for r in records)
     print(f"\nwrote {len(records)} records ({len(records) - n_val} train / {n_val} val) "
           f"-> {root}/manifest.jsonl")
-    print(f"train: lab run configs/tok_inet_64.yaml  (or examples/ddpm/config.yaml)")
+    print("train: lab run configs/tok_inet_64.yaml  (or examples/ddpm/config.yaml)")
 
 
 if __name__ == "__main__":

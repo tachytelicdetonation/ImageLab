@@ -1,7 +1,8 @@
 """A small time-conditioned UNet — the shared backbone for the diffusion examples.
 
 Standard DDPM-style architecture (Ho et al. 2020, App. B) scaled down for 64px/single
-GPU (the rectified_flow example imports it too): sinusoidal time embedding -> MLP, residual blocks with time injection, one
+GPU (the rectified_flow example imports it too): sinusoidal time embedding -> MLP,
+residual blocks with time injection, one
 self-attention at the lowest resolution, skip connections. ~12M params at ch=64.
 
 Nothing here is framework-specific — any nn.Module works in a task; this file exists so

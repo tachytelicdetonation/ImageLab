@@ -292,12 +292,15 @@ class TrainLoop:
                     # Step generator opts always; disc opt (last) only after disc_start.
                     if disc_params is not None and len(optimizers) >= 2:
                         for opt, sch in zip(optimizers[:-1], schedulers[:-1]):
-                            opt.step(); sch.step()
+                            opt.step()
+                            sch.step()
                         if step >= self.disc_start_step:
-                            optimizers[-1].step(); schedulers[-1].step()
+                            optimizers[-1].step()
+                            schedulers[-1].step()
                     else:
                         for opt, sch in zip(optimizers, schedulers):
-                            opt.step(); sch.step()
+                            opt.step()
+                            sch.step()
 
                 # ---- cadenced logging ----
                 if step % self.cad.log_every == 0:

@@ -8,7 +8,6 @@ defined in a plain directory, no registry, no packaging — through the full lif
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
