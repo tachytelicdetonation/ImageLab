@@ -1,5 +1,9 @@
 # ImageLab
 
+[![ci](https://github.com/tachytelicdetonation/ImageLab/actions/workflows/ci.yml/badge.svg)](https://github.com/tachytelicdetonation/ImageLab/actions/workflows/ci.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![python](https://img.shields.io/badge/python-3.11%2B-blue)
+
 A small lab for **single-GPU model experimentation**. You bring the model, data, loss,
 and metrics — any family: diffusion, autoregressive, tokenizers, something else entirely.
 The lab brings the part every research codebase reinvents badly: **runs as data** (every
@@ -7,14 +11,19 @@ run a self-describing folder + ledger row), a **kill funnel** that murders bad i
 the cheapest possible tier, and a CLI that keeps results comparable forever.
 
 ```bash
-uv venv --python 3.12 && uv pip install -e .
-python -m imagelab.data.download_imagenette --size 64    # blessed dataset (~100MB, Apache-2.0)
+git clone https://github.com/tachytelicdetonation/ImageLab && cd ImageLab
+uv sync                                                          # or: pip install -e .
+uv run python -m imagelab.data.download_imagenette --size 64    # blessed dataset (~100MB, Apache-2.0)
 
-lab run examples/ddpm/config.yaml --tier smoke           # does it execute?      ~30s
-lab run examples/ddpm/config.yaml --tier overfit         # can it learn AT ALL?  pass/fail
-lab run examples/ddpm/config.yaml --tier fast            # better than baseline? 2k steps
-lab run examples/ddpm/config.yaml                        # the real run
+uv run lab run examples/ddpm/config.yaml --tier smoke           # does it execute?      ~30s
+uv run lab run examples/ddpm/config.yaml --tier overfit         # can it learn AT ALL?  pass/fail
+uv run lab run examples/ddpm/config.yaml --tier fast            # better than baseline? 2k steps
+uv run lab run examples/ddpm/config.yaml                        # the real run
 ```
+
+(`source .venv/bin/activate` once and you can drop every `uv run` prefix. Source
+install only: the PyPI name `imagelab` belongs to an unrelated package — don't
+`pip install imagelab`.)
 
 ## Your whole project is one class
 
@@ -47,6 +56,14 @@ resume, crash bookkeeping, and the ledger row; `Task` declares everything scient
 including optional hooks (`validate_config`, `apply_tier`, `add_args`) when your project
 needs its own config schema, tier tweaks, or CLI flags.
 
+Three ways to point a config at a task, no packaging required for the first:
+
+```yaml
+task: task.py:MyIdea          # a file next to the config — clone-free experimentation
+task: mypkg.tasks:MyIdea      # a dotted module path
+task: my_idea                 # a registered name ([tool.imagelab] imports in pyproject.toml)
+```
+
 ## The idea: a kill funnel, then a ledger
 
 Prototyping speed is how cheaply you can kill a bad idea. Each tier answers one
@@ -74,8 +91,20 @@ runs/0610-1432_ddpm_lr-3e-4/
   samples/  checkpoints/
 ```
 
+and one `lab runs` away:
+
+```
+$ lab runs
+run                        task   tier     status  steps  min   seed  result               deltas
+-------------------------  -----  -------  ------  -----  ----  ----  -------------------  ----------
+0610-1845_ddpm_lr-0.0003   ddpm   fast     done    2000   18.2  0     noise_mse 0.0214     lr=0.0003
+0610-1432_ddpm_overfit     ddpm   overfit  done    300    2.1   0     overfit:pass         
+0610-1430_rf_overfit       rf     overfit  done    300    2.0   0     overfit:pass         
+0610-1102_ddpm_smoke       ddpm   smoke    done    8      0.1   0     loss 0.9871          
+```
+
 ```bash
-lab runs                                   # table of every run, newest first
+lab runs                                   # the table above
 lab compare 0610-1432 0609-1820            # config diff + metric diff (any two runs —
                                            #   even different model families)
 lab board --metric val/noise_mse           # leaderboard
@@ -98,25 +127,14 @@ Same tiny UNet, same data, same fixed-noise val protocol — diff the two `task.
 to see exactly what "a model family" costs here. Both write deterministic val metrics
 (fixed `(t, ε)` pairs, constant seed) so numbers are comparable across runs *and seeds*.
 
-## The resident research project: cvq
+## Working with AI agents
 
-The lab grew out of faithful reimplementations of **Channel-wise VQ**
-([arXiv:2605.26089](https://arxiv.org/abs/2605.26089)) + **EOSTok**
-([arXiv:2605.00503](https://arxiv.org/abs/2605.00503)) text-to-image. The `cvq` package
-is that research, rebuilt as an imagelab consumer — and the reference for every "how do
-I do X in my own project?" question:
-
-- own typed config schema + load-time guardrails → `cvq/config.py`, hooked in via
-  `Task.validate_config`
-- own component kinds (quantizer/encoder/decoder/ar_head) with registry + `paper=`
-  citations → `cvq/models/`, `lab cite <config>`
-- own contract checkers + scaffolds for those kinds → `cvq/lab/`, `lab check quantizer
-  lfq`, `lab new quantizer my_idea`
-- registered task names (`task: tokenizer|car|e2e`) via `[tool.imagelab] imports` in
-  pyproject.toml — the installed-package alternative to `task.py:Class` paths
-
-Faithfulness notes for cvq (IBQ per official SEED-Voken code, bit-for-bit refactor
-verification, FID protocol) live in `RESULTS.md` and inline where they apply.
+The repo ships **[AGENTS.md](AGENTS.md)**: the operating manual for coding agents
+(Claude Code, Codex, ...) doing research on this framework — how to implement a paper
+faithfully behind the Task seam, walk the tier ladder instead of jumping to full runs,
+and treat the ledger as the lab notebook. If you point an agent at this repo, it reads
+that file first; the discipline it encodes (kill cheap, change one variable, never tune
+a gate to pass) is good advice for humans too.
 
 ## Datasets
 
@@ -131,8 +149,6 @@ the loader, but tasks are free to ignore it entirely.
 - **Blessed benchmark**: ImageNette/ImageWoof 64px
   (`python -m imagelab.data.download_imagenette --which both`) — Apache-2.0, ~26k
   images, official val split preserved.
-- Pokemon (`cvq.data.download_pokemon`) remains for fun/local use; the images are
-  Nintendo IP — don't publish results/checkpoints built on it.
 
 ## Not goals
 
@@ -154,9 +170,8 @@ imagelab/           # the framework — model-family agnostic
 examples/
   ddpm/             # blessed baseline (self-contained: task + UNet + config)
   rectified_flow/   # second family — diff against ddpm to see the seam
-cvq/                # the resident research project (CVQ/EOSTok, forks A & B)
-configs/            # cvq's blessed bases; experiments are --set deltas, not copies
-tests/              # fast CPU seam tests (framework + cvq; no network, no datasets)
+tests/              # fast CPU seam tests (no network, no datasets)
+AGENTS.md           # operating manual for AI coding agents (and disciplined humans)
 ```
 
-MIT licensed. PRs: see `CONTRIBUTING.md`.
+MIT licensed. PRs: see `CONTRIBUTING.md`. Releases: see `CHANGELOG.md`.

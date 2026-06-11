@@ -4,13 +4,15 @@ Each directory is a full imagelab project: `task.py` + `config.yaml` (+ model co
 runnable from the repo root with no packaging:
 
 ```bash
-python -m imagelab.data.download_imagenette --size 64       # once
+uv run python -m imagelab.data.download_imagenette --size 64   # once
 
-lab run examples/ddpm/config.yaml --tier smoke              # executes?
-lab run examples/ddpm/config.yaml --tier overfit            # learns? (auto verdict)
-lab run examples/rectified_flow/config.yaml --tier overfit
-lab compare <ddpm-run> <rf-run>                             # two families, one ledger
+uv run lab run examples/ddpm/config.yaml --tier smoke           # executes?
+uv run lab run examples/ddpm/config.yaml --tier overfit         # learns? (auto verdict)
+uv run lab run examples/rectified_flow/config.yaml --tier overfit
+uv run lab compare <ddpm-run> <rf-run>                          # two families, one ledger
 ```
+
+(activate the venv — `source .venv/bin/activate` — to drop the `uv run` prefixes)
 
 | example | method | objective | sampler |
 |---|---|---|---|

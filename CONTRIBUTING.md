@@ -2,8 +2,8 @@
 
 ImageLab is a small lab for single-GPU model experimentation: the framework owns the
 run lifecycle, users own everything scientific. Contributions that fit best: framework
-seams that make bad runs die cheaper, new example model families, datasets in the
-manifest format, and components/diagnostics for the resident projects.
+seams that make bad runs die cheaper, new example model families, and datasets in the
+manifest format.
 
 ## The seams are the public API
 
@@ -30,29 +30,19 @@ runs via `lab run examples/<name>/config.yaml --tier smoke|overfit|fast`. The ba
    comparable across seeds.
 4. A `paper=` reference (or arXiv id in the docstring) for the method.
 
-## Adding a cvq component
-
-```bash
-lab new quantizer my_idea       # scaffolds a WORKING contract implementation
-lab check quantizer my_idea     # contract probes (CI runs these for builtins)
-lab run configs/tok_inet_64.yaml --set model.quant_type=my_idea --tier overfit
-lab run configs/tok_inet_64.yaml --set model.quant_type=my_idea --tier fast
-```
-
-Include a contract test in `tests/test_lab.py` and a `--tier fast` comparison vs. the
-unmodified base config on ImageNette-64 in the PR description.
-
 ## House rules
 
 - **Fail at config load, not at step 4000.** Framework-level validation lives in
   `imagelab/config.py`; project schemas hook in via `Task.validate_config`.
 - **Offline-first.** `runs/<id>/` + the ledger are the source of truth; wandb/TB are
-  mirrors. Tests must run with no network and no datasets.
+  optional mirrors (the `[logging]` extra). Tests must run with no network and no
+  datasets.
 - **Faithfulness over convenience** in reference implementations — match the official
-  code/paper and comment deviations where they live. Construction order in `setup()` is
-  RNG-load-bearing; don't break seeded reproducibility casually.
+  code/paper and comment deviations where they live (AGENTS.md has the full
+  discipline). Construction order in `setup()` is RNG-load-bearing; don't break seeded
+  reproducibility casually.
 - **No silent science changes.** Anything that alters what a metric means (splits, eval
-  batches, FID protocol) gets a loud README note.
+  batches, protocols) gets a loud README note.
 
 ## Out of scope (by design)
 
@@ -63,6 +53,11 @@ trustworthy comparisons.
 ## Dev setup
 
 ```bash
-uv venv --python 3.12 && uv pip install -e . --group dev
-uv run pytest tests/ -q
+uv sync                                            # locked install incl. dev tools
+uv run pytest -q                                   # CPU-only, seconds
+uv run ruff check imagelab examples tests          # CI gates on this
 ```
+
+CI (`.github/workflows/ci.yml`) runs lint + tests + a scaffold smoke run + the example
+contract probes on Python 3.11 and 3.12, installed from `uv.lock` — if you change
+dependencies, commit the regenerated lockfile (`uv lock`).
