@@ -1,5 +1,16 @@
 # ImageLab
 
+## Start here
+
+ImageLab manages the lifecycle around a single-GPU experiment: staged checks,
+resolved configuration, checkpoints, metrics, and a persistent run ledger.
+Models, datasets, and objectives live in a `Task` subclass.
+
+- [Examples](examples/README.md): start with DDPM or rectified flow.
+- [Framework tests](tests/test_framework.py): inspect the expected behavior.
+- Use `lab runs` and `lab compare` to inspect recorded runs; the commands below
+  show how to create them.
+
 [![ci](https://github.com/tachytelicdetonation/ImageLab/actions/workflows/ci.yml/badge.svg)](https://github.com/tachytelicdetonation/ImageLab/actions/workflows/ci.yml)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![python](https://img.shields.io/badge/python-3.11%2B-blue)
